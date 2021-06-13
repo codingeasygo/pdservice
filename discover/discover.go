@@ -6,10 +6,13 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/codingeasygo/util/debug"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
@@ -32,13 +35,15 @@ func (c *Container) HostPrefix() string {
 }
 
 type Discover struct {
-	Client    *client.Client
-	MatchKey  string
-	HostAddr  string
-	HostName  string
-	proxyList []*Container
-	proxyMap  map[string]*httputil.ReverseProxy
-	proxyLock sync.RWMutex
+	Client     *client.Client
+	MatchKey   string
+	HostAddr   string
+	HostName   string
+	Bash       string
+	proxyList  []*Container
+	proxyMap   map[string]*httputil.ReverseProxy
+	proxyLock  sync.RWMutex
+	refreshing bool
 }
 
 func NewDiscover(cli *client.Client, hostAddr, hostName string) (discover *Discover) {
@@ -47,6 +52,7 @@ func NewDiscover(cli *client.Client, hostAddr, hostName string) (discover *Disco
 		MatchKey:  "-srv-",
 		HostAddr:  hostAddr,
 		HostName:  hostName,
+		Bash:      "bash",
 		proxyMap:  map[string]*httputil.ReverseProxy{},
 		proxyLock: sync.RWMutex{},
 	}
@@ -162,5 +168,59 @@ func (d *Discover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	} else {
 		proxy.ServeHTTP(w, r)
+	}
+}
+
+func (d *Discover) StartRefresh(refreshTime time.Duration, onAdded, onRemoved string) {
+	d.refreshing = true
+	InfoLog("start refresh by time:%v,added:%v,removed:%v", refreshTime, onAdded, onRemoved)
+	go d.runRefresh(refreshTime, onAdded, onRemoved)
+}
+
+func (d *Discover) StopRefresh() {
+	d.refreshing = false
+}
+
+func (d *Discover) runRefresh(refreshTime time.Duration, onAdded, onRemoved string) {
+	for d.refreshing {
+		d.callRefresh(onAdded, onRemoved)
+		time.Sleep(refreshTime)
+	}
+}
+
+func (d *Discover) callRefresh(onAdded, onRemoved string) {
+	defer func() {
+		if xerr := recover(); xerr != nil {
+			ErrorLog("call refresh panic with %v, call stack is:\n%v", xerr, debug.CallStatck())
+		}
+	}()
+	all, added, removed, err := d.Refresh()
+	if err != nil {
+		ErrorLog("call refresh fail with %v", err)
+		return
+	}
+	DebugLog("call refresh success with all:%v,added:%v,removed:%v", len(all), len(added), len(removed))
+	if len(added) > 0 && len(onAdded) > 0 {
+		d.callTrigger(added, "added", onAdded)
+	}
+	if len(removed) > 0 && len(onRemoved) > 0 {
+		d.callTrigger(removed, "removed", onRemoved)
+	}
+}
+
+func (d *Discover) callTrigger(services []*Container, name, trigger string) {
+	for _, service := range services {
+		cmd := exec.Command(d.Bash, trigger)
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_VER", service.Version))
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_NAME", service.Name))
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_INDEX", service.Index))
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_HOST", service.Address.Host))
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_PREF", service.HostPrefix()))
+		info, xerr := cmd.Output()
+		if xerr != nil {
+			WarnLog("call refresh trigger %v fail with %v by\n\tCMD:%v\n\tENV:%v\n\tOut:\n%v", name, xerr, cmd.Path, cmd.Env, string(info))
+		} else {
+			InfoLog("call refresh trigger %v success by\n\tCMD:%v\n\tENV:%v\n\tOut:\n%v", name, cmd.Path, cmd.Env, string(info))
+		}
 	}
 }

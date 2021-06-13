@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func callScript(script string) string {
@@ -86,5 +87,17 @@ func TestDiscover(t *testing.T) {
 			t.Error(res2.Body.String())
 			return
 		}
+	}
+	{
+		discover.StartRefresh(time.Millisecond*10, "./trigger.sh", "./trigger.sh")
+		fmt.Println(callScript(`
+			docker start ds-srv-v1.0.0
+		`))
+		time.Sleep(time.Millisecond * 10)
+		fmt.Println(callScript(`
+			docker stop ds-srv-v1.0.0
+		`))
+		time.Sleep(time.Millisecond * 10)
+		discover.StopRefresh()
 	}
 }

@@ -1,0 +1,6 @@
+#!/bin/bash
+echo $PD_SERVICE_VER
+echo $PD_SERVICE_NAME
+echo $PD_SERVICE_INDEX
+echo $PD_SERVICE_HOST
+echo $PD_SERVICE_PREF
