@@ -183,11 +183,19 @@ func (d *Discover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	d.proxyLock.RLock()
 	proxy := d.proxyMap[r.Host]
 	d.proxyLock.RUnlock()
-	if proxy == nil {
-		http.NotFound(w, r)
-	} else {
+	if proxy != nil {
 		proxy.ServeHTTP(w, r)
+		return
 	}
+	w.Header().Add("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	fmt.Fprintf(w, "%v not found\n\n", r.Host)
+	d.proxyLock.RLock()
+	fmt.Fprintf(w, "Having:\n")
+	for having := range d.proxyMap {
+		fmt.Fprintf(w, "\t%v\n", having)
+	}
+	d.proxyLock.RUnlock()
 }
 
 func (d *Discover) StartRefresh(refreshTime time.Duration, onAdded, onRemoved string) {
