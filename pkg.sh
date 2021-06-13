@@ -26,6 +26,7 @@ go build -o $srv_out/pdsd github.com/codingeasygo/pdservice
 cp -rf conf $srv_out
 cp -rf pdservice-install.sh pdservice.service $srv_out
 # apidoc -i shsapi -o $srv_out/www/apidoc
+git restore version.go
 ###
 cd $output
 rm -f $srv_name-$srv_ver-$head_sha-`uname`.tar.gz
