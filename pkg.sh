@@ -33,5 +33,8 @@ git restore version.go
 cd $output
 rm -f $srv_name-$srv_ver-$head_sha-`uname`.tar.gz
 tar -czvf $srv_name-$srv_ver-$head_sha-`uname`.tar.gz $srv_name
+if [ "$1" != "" ];then
+    scp $srv_name-$srv_ver-$head_sha-`uname`.tar.gz $1
+fi
 cd $cpwd
 echo "Package $srv_name-$srv_ver-$head_sha done..."
