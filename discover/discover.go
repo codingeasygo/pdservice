@@ -102,7 +102,7 @@ func (d *Discover) Refresh() (all, added, removed []*Container, err error) {
 	for _, having := range all {
 		found := false
 		for _, old := range d.proxyList {
-			if having.HostPrefix() == old.HostPrefix() {
+			if having.HostPrefix() == old.HostPrefix() && having.Address.Host == old.Address.Host {
 				found = true
 				break
 			}
@@ -114,7 +114,7 @@ func (d *Discover) Refresh() (all, added, removed []*Container, err error) {
 	for _, old := range d.proxyList {
 		found := false
 		for _, having := range all {
-			if having.HostPrefix() == old.HostPrefix() {
+			if having.HostPrefix() == old.HostPrefix() && having.Address.Host == old.Address.Host {
 				found = true
 				break
 			}
