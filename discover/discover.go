@@ -68,6 +68,7 @@ func (d *Discover) newDockerClient() (cli *client.Client, remoteHost string, err
 			err = xerr
 			return
 		}
+		InfoLog("find docker info by \n%v", string(info))
 		conf := xprop.NewConfig()
 		err = conf.LoadPropString(string(info))
 		if err != nil {

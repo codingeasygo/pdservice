@@ -31,7 +31,7 @@ func main() {
 	triggerRemoved := cfg.StrDef("", "trigger_removed")
 	server := discover.NewDiscover()
 	server.TriggerBash = cfg.StrDef("bash", "trigger_bash")
-	server.DockerFinder = cfg.StrDef("", "docker_finder")
+	server.DockerFinder = cfg.StrDef("", "trigger_finder")
 	server.DockerCert = cfg.StrDef("certs", "docker_cert")
 	server.DockerAddr = cfg.StrDef("tcp://127.0.0.1:2376", "docker_addr")
 	server.DockerHost = cfg.StrDef("127.0.0.1", "docker_host")
