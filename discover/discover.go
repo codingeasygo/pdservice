@@ -145,6 +145,7 @@ func (d *Discover) Discove() (containers []*Container, err error) {
 	if err != nil {
 		return
 	}
+	defer cli.Close()
 	containerList, err := cli.ContainerList(context.Background(), types.ContainerListOptions{
 		Filters: filters.NewArgs(filters.Arg("name", fmt.Sprintf("^.*%vv[0-9\\.]*$", d.MatchKey))),
 	})
