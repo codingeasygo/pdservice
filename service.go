@@ -12,13 +12,15 @@ import (
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "-v" {
-		fmt.Printf("dockerdiscover %v version\n", Version)
+		fmt.Printf("pdservice %v version\n", Version)
 		return
 	}
-	confPath := "conf/dockerdiscover.properties"
+	confPath := "conf/pdservice.properties"
 	if len(os.Args) > 1 {
 		confPath = os.Args[1]
 	}
+	wd, _ := os.Getwd()
+	fmt.Printf("starting pdservice with working on %v\n", wd)
 	cfg := xprop.NewConfig()
 	err := cfg.Load(confPath)
 	if err != nil {
