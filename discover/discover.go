@@ -129,11 +129,13 @@ func (d *Discover) Refresh() (all, added, removed []*Container, err error) {
 	for _, service := range removed {
 		host := service.HostPrefix() + d.HostSuff
 		delete(d.proxyMap, host)
+		InfoLog("Discover remove %v for service down", host)
 	}
 	for _, service := range added {
 		host := service.HostPrefix() + d.HostSuff
 		proxy := httputil.NewSingleHostReverseProxy(service.Address)
 		d.proxyMap[host] = proxy
+		InfoLog("Discover add %v for service up", host)
 	}
 	return
 }
