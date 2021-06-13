@@ -25,6 +25,7 @@ echo "Build $srv_name normal executor..."
 go build -o $srv_out/pdsd github.com/codingeasygo/pdservice	
 cp -rf conf $srv_out
 cp -rf discover/trigger.sh $srv_out/trigger_example.sh
+cp -rf discover/finder.sh $srv_out/finder_example.sh
 cp -rf pdservice-install.sh pdservice.service $srv_out
 # apidoc -i shsapi -o $srv_out/www/apidoc
 git restore version.go

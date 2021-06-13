@@ -26,22 +26,20 @@ func callScript(script string) string {
 
 func TestDiscover(t *testing.T) {
 	pwd, _ := os.Getwd()
-	hostAddr := callScript(`docker inspect --format="{{.NetworkSettings.IPAddress}}" docker-discover`)
-	hostName := ".test.loc"
+	dockerHost := callScript(`docker inspect --format="{{.NetworkSettings.IPAddress}}" docker-discover`)
 	dockerCert := filepath.Join(pwd, "../test/certs/client")
-	dockerHost := fmt.Sprintf("tcp://%v:2376", hostAddr)
-	os.Setenv("DOCKER_CERT_PATH", dockerCert)
-	os.Setenv("DOCKER_HOST", dockerHost)
-	os.Setenv("DOCKER_TLS_VERIFY", "1")
-	discover, err := NewDiscoverWithConf(dockerCert, dockerHost, hostAddr, hostName)
-	if err != nil {
-		t.Error(err)
-		return
-	}
+	dockerAddr := fmt.Sprintf("tcp://%v:2376", dockerHost)
+	hostSuff := ".test.loc"
+	discover := NewDiscover()
+	discover.HostSuff = hostSuff
 	{
+		discover.DockerFinder = ""
+		discover.DockerCert = dockerCert
+		discover.DockerAddr = dockerAddr
+		discover.DockerHost = dockerHost
 		fmt.Println(callScript(`
-			docker start ds-srv-v1.0.0
-			docker start ds-srv-v1.0.1
+			docker exec docker-discover docker start ds-srv-v1.0.0
+			docker exec docker-discover docker start ds-srv-v1.0.1
 		`))
 		all, added, removed, err := discover.Refresh()
 		if err != nil || len(all) != 2 || len(added) != 2 || len(removed) != 0 {
@@ -64,8 +62,12 @@ func TestDiscover(t *testing.T) {
 		}
 	}
 	{
+		discover.DockerFinder = "./finder.sh"
+		discover.DockerCert = ""
+		discover.DockerAddr = ""
+		discover.DockerHost = ""
 		fmt.Println(callScript(`
-			docker stop ds-srv-v1.0.0
+			docker exec docker-discover docker stop ds-srv-v1.0.0
 		`))
 		all, added, removed, err := discover.Refresh()
 		if err != nil || len(all) != 1 || len(added) != 0 || len(removed) != 1 {
@@ -91,11 +93,11 @@ func TestDiscover(t *testing.T) {
 	{
 		discover.StartRefresh(time.Millisecond*10, "./trigger.sh", "./trigger.sh")
 		fmt.Println(callScript(`
-			docker start ds-srv-v1.0.0
+			docker exec docker-discover docker start ds-srv-v1.0.0
 		`))
 		time.Sleep(time.Millisecond * 10)
 		fmt.Println(callScript(`
-			docker stop ds-srv-v1.0.0
+			docker exec docker-discover docker stop ds-srv-v1.0.0
 		`))
 		time.Sleep(time.Millisecond * 10)
 		discover.StopRefresh()

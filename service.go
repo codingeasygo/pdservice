@@ -20,22 +20,22 @@ func main() {
 		confPath = os.Args[1]
 	}
 	cfg := xprop.NewConfig()
-	cfg.Load(confPath)
+	err := cfg.Load(confPath)
+	if err != nil {
+		panic(err)
+	}
 	cfg.Print()
-	hostAddr := cfg.StrDef("127.0.0.1", "proxy_host_addr")
-	hostName := cfg.StrDef("", "proxy_host_name")
-	dockerCert := cfg.StrDef("certs", "docker_cert")
-	dockerHost := cfg.StrDef("tcp://127.0.0.1:2376", "docker_host")
 	listenAddr := cfg.StrDef(":9231", "listen")
 	refreshTime := cfg.Int64Def(10000, "refresh_time")
 	triggerAdded := cfg.StrDef("", "trigger_added")
 	triggerRemoved := cfg.StrDef("", "trigger_removed")
-	triggerBash := cfg.StrDef("bash", "trigger_bash")
-	server, err := discover.NewDiscoverWithConf(dockerCert, dockerHost, hostAddr, hostName)
-	if err != nil {
-		panic(err)
-	}
-	server.Bash = triggerBash
+	server := discover.NewDiscover()
+	server.TriggerBash = cfg.StrDef("bash", "trigger_bash")
+	server.DockerFinder = cfg.StrDef("", "docker_finder")
+	server.DockerCert = cfg.StrDef("certs", "docker_cert")
+	server.DockerAddr = cfg.StrDef("tcp://127.0.0.1:2376", "docker_addr")
+	server.DockerHost = cfg.StrDef("127.0.0.1", "docker_host")
+	server.HostSuff = cfg.StrDef("", "host_suffix")
 	server.StartRefresh(time.Duration(refreshTime)*time.Millisecond, triggerAdded, triggerRemoved)
 	err = http.ListenAndServe(listenAddr, server)
 	if err != nil {

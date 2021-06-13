@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/codingeasygo/util/debug"
+	"github.com/codingeasygo/util/xprop"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
@@ -35,31 +36,47 @@ func (c *Container) HostPrefix() string {
 }
 
 type Discover struct {
-	Client     *client.Client
-	MatchKey   string
-	HostAddr   string
-	HostName   string
-	Bash       string
-	proxyList  []*Container
-	proxyMap   map[string]*httputil.ReverseProxy
-	proxyLock  sync.RWMutex
-	refreshing bool
+	MatchKey     string
+	DockerFinder string
+	DockerCert   string
+	DockerAddr   string
+	DockerHost   string
+	HostSuff     string
+	TriggerBash  string
+	proxyList    []*Container
+	proxyMap     map[string]*httputil.ReverseProxy
+	proxyLock    sync.RWMutex
+	refreshing   bool
 }
 
-func NewDiscover(cli *client.Client, hostAddr, hostName string) (discover *Discover) {
+func NewDiscover() (discover *Discover) {
 	discover = &Discover{
-		Client:    cli,
-		MatchKey:  "-srv-",
-		HostAddr:  hostAddr,
-		HostName:  hostName,
-		Bash:      "bash",
-		proxyMap:  map[string]*httputil.ReverseProxy{},
-		proxyLock: sync.RWMutex{},
+		MatchKey:    "-srv-",
+		TriggerBash: "bash",
+		proxyMap:    map[string]*httputil.ReverseProxy{},
+		proxyLock:   sync.RWMutex{},
 	}
 	return
 }
 
-func NewDiscoverWithConf(dockerCert, dockerHost, hostAddr, hostName string) (discover *Discover, err error) {
+func (d *Discover) newDockerClient() (cli *client.Client, remoteHost string, err error) {
+	dockerCert, dockerAddr := d.DockerCert, d.DockerAddr
+	remoteHost = d.DockerHost
+	if len(d.DockerFinder) > 0 {
+		info, xerr := exec.Command(d.TriggerBash, d.DockerFinder).Output()
+		if xerr != nil {
+			err = xerr
+			return
+		}
+		conf := xprop.NewConfig()
+		err = conf.LoadPropString(string(info))
+		if err != nil {
+			return
+		}
+		dockerCert = conf.StrDef(dockerCert, "docker_cert")
+		dockerAddr = conf.StrDef(dockerAddr, "docker_addr")
+		remoteHost = conf.StrDef(d.DockerHost, "docker_host")
+	}
 	options := tlsconfig.Options{
 		CAFile:   filepath.Join(dockerCert, "ca.pem"),
 		CertFile: filepath.Join(dockerCert, "cert.pem"),
@@ -73,11 +90,7 @@ func NewDiscoverWithConf(dockerCert, dockerHost, hostAddr, hostName string) (dis
 		Transport:     &http.Transport{TLSClientConfig: tlsc},
 		CheckRedirect: client.CheckRedirect,
 	}
-	cli, err := client.NewClientWithOpts(client.WithHTTPClient(httpClient), client.WithHost(dockerHost))
-	if err != nil {
-		return
-	}
-	discover = NewDiscover(cli, hostAddr, hostName)
+	cli, err = client.NewClientWithOpts(client.WithHTTPClient(httpClient), client.WithHost(dockerAddr))
 	return
 }
 
@@ -114,11 +127,11 @@ func (d *Discover) Refresh() (all, added, removed []*Container, err error) {
 	defer d.proxyLock.Unlock()
 	d.proxyList = all
 	for _, service := range removed {
-		host := service.HostPrefix() + d.HostName
+		host := service.HostPrefix() + d.HostSuff
 		delete(d.proxyMap, host)
 	}
 	for _, service := range added {
-		host := service.HostPrefix() + d.HostName
+		host := service.HostPrefix() + d.HostSuff
 		proxy := httputil.NewSingleHostReverseProxy(service.Address)
 		d.proxyMap[host] = proxy
 	}
@@ -126,7 +139,11 @@ func (d *Discover) Refresh() (all, added, removed []*Container, err error) {
 }
 
 func (d *Discover) Discove() (containers []*Container, err error) {
-	containerList, err := d.Client.ContainerList(context.Background(), types.ContainerListOptions{
+	cli, remoteHost, err := d.newDockerClient()
+	if err != nil {
+		return
+	}
+	containerList, err := cli.ContainerList(context.Background(), types.ContainerListOptions{
 		Filters: filters.NewArgs(filters.Arg("name", fmt.Sprintf("^.*%vv[0-9\\.]*$", d.MatchKey))),
 	})
 	if err != nil {
@@ -136,7 +153,7 @@ func (d *Discover) Discove() (containers []*Container, err error) {
 		if c.State != "running" {
 			continue
 		}
-		inspect, xerr := d.Client.ContainerInspect(context.Background(), c.ID)
+		inspect, xerr := cli.ContainerInspect(context.Background(), c.ID)
 		if xerr != nil {
 			err = xerr
 			return
@@ -145,7 +162,7 @@ func (d *Discover) Discove() (containers []*Container, err error) {
 		nameParts := strings.SplitN(name, d.MatchKey, 2)
 		index := 0
 		for private, ports := range inspect.NetworkSettings.Ports {
-			address, _ := url.Parse(fmt.Sprintf("http://%v:%v", d.HostAddr, ports[0].HostPort))
+			address, _ := url.Parse(fmt.Sprintf("http://%v:%v", remoteHost, ports[0].HostPort))
 			container := &Container{
 				Name:    nameParts[0],
 				Version: nameParts[1],
@@ -210,7 +227,7 @@ func (d *Discover) callRefresh(onAdded, onRemoved string) {
 
 func (d *Discover) callTrigger(services []*Container, name, trigger string) {
 	for _, service := range services {
-		cmd := exec.Command(d.Bash, trigger)
+		cmd := exec.Command(d.TriggerBash, trigger)
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_VER", service.Version))
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_NAME", service.Name))
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_INDEX", service.Index))
