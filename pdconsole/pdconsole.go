@@ -103,8 +103,13 @@ func main() {
 		fmt.Printf("enviroment PDSERVER=http(s)://pdserver-address is required\n")
 		os.Exit(1)
 	}
-	if len(os.Args) < 2 {
+	if len(os.Args) < 2 || os.Args[1] == "-h" || os.Args[1] == "--help" {
 		fmt.Printf("Usage: pdconsole COMMAND [OPTIONS]\n")
+		fmt.Printf("       pdconsole docker COMMAND [OPTIONS]     to control container\n")
+		fmt.Printf("       pdconsole docker start                 to start container\n")
+		fmt.Printf("       pdconsole docker stop                  to stop container\n")
+		fmt.Printf("       pdconsole docker restart               to restart container\n")
+		fmt.Printf("       pdconsole docker logs [OPTIONS]        to show container log\n")
 		os.Exit(1)
 	}
 	switch os.Args[1] {
@@ -124,5 +129,8 @@ func main() {
 			fmt.Printf("%v is not supported\n", os.Args[2])
 			os.Exit(1)
 		}
+	default:
+		fmt.Printf("%v is not supported\n", os.Args[1])
+		os.Exit(1)
 	}
 }
