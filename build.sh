@@ -11,8 +11,8 @@ docker run --privileged --restart always --name docker-discover -d \
     -v `pwd`/test/data:/var/lib/docker \
     docker:dind
 sleep 2 # wait started
-docker exec docker-discover docker rm -f ds-srv-v1.0.0
-docker exec docker-discover docker run -d --name ds-srv-v1.0.0 --restart always -P nginx
+docker exec docker-discover docker rm -f ds-srv-v1.0.0-abc
+docker exec docker-discover docker run -d --name ds-srv-v1.0.0-abc --restart always -P nginx
 docker exec docker-discover docker rm -f ds-srv-v1.0.1
 docker exec docker-discover docker run -d --name ds-srv-v1.0.1 --restart always -P nginx
 #########

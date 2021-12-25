@@ -17,15 +17,19 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/tlsconfig"
+	"golang.org/x/net/websocket"
 )
 
 type Container struct {
+	ID      string   `json:"id"`
 	Name    string   `json:"name"`
 	Version string   `json:"version"`
-	Address *url.URL `json:"address"`
+	Address *url.URL `json:"-"`
 	Index   int      `json:"index"`
 	Port    string   `json:"port"`
+	Token   string   `json:"token"`
 }
 
 func (c *Container) HostPrefix() string {
@@ -43,23 +47,42 @@ type Discover struct {
 	DockerHost   string
 	HostSuff     string
 	TriggerBash  string
+	SrvPrefix    string
+	clientNew    *client.Client
+	clientHost   string
+	clientLatest time.Time
+	clientLock   sync.RWMutex
 	proxyList    []*Container
-	proxyMap     map[string]*httputil.ReverseProxy
+	proxyAll     map[string]*Container
+	proxyReverse map[string]*httputil.ReverseProxy
 	proxyLock    sync.RWMutex
 	refreshing   bool
 }
 
 func NewDiscover() (discover *Discover) {
 	discover = &Discover{
-		MatchKey:    "-srv-",
-		TriggerBash: "bash",
-		proxyMap:    map[string]*httputil.ReverseProxy{},
-		proxyLock:   sync.RWMutex{},
+		MatchKey:     "-srv-",
+		TriggerBash:  "bash",
+		SrvPrefix:    "/_s/",
+		clientLock:   sync.RWMutex{},
+		proxyAll:     map[string]*Container{},
+		proxyReverse: map[string]*httputil.ReverseProxy{},
+		proxyLock:    sync.RWMutex{},
 	}
 	return
 }
 
 func (d *Discover) newDockerClient() (cli *client.Client, remoteHost string, err error) {
+	d.clientLock.Lock()
+	defer d.clientLock.Unlock()
+	if d.clientNew != nil && time.Since(d.clientLatest) < 10*time.Minute {
+		cli, remoteHost = d.clientNew, d.clientHost
+		return
+	}
+	if d.clientNew != nil {
+		d.clientNew.Close()
+		d.clientNew = nil
+	}
 	dockerCert, dockerAddr := d.DockerCert, d.DockerAddr
 	remoteHost = d.DockerHost
 	if len(d.DockerFinder) > 0 {
@@ -91,6 +114,11 @@ func (d *Discover) newDockerClient() (cli *client.Client, remoteHost string, err
 		CheckRedirect: client.CheckRedirect,
 	}
 	cli, err = client.NewClientWithOpts(client.WithHTTPClient(httpClient), client.WithHost(dockerAddr))
+	if err == nil {
+		d.clientNew = cli
+		d.clientHost = remoteHost
+		d.clientLatest = time.Now()
+	}
 	return
 }
 
@@ -102,8 +130,9 @@ func (d *Discover) Refresh() (all, added, removed []*Container, err error) {
 	for _, having := range all {
 		found := false
 		for _, old := range d.proxyList {
-			if having.HostPrefix() == old.HostPrefix() && having.Address.Host == old.Address.Host {
+			if having.HostPrefix() == old.HostPrefix() {
 				found = true
+				old.ID = having.ID
 				break
 			}
 		}
@@ -114,7 +143,7 @@ func (d *Discover) Refresh() (all, added, removed []*Container, err error) {
 	for _, old := range d.proxyList {
 		found := false
 		for _, having := range all {
-			if having.HostPrefix() == old.HostPrefix() && having.Address.Host == old.Address.Host {
+			if having.HostPrefix() == old.HostPrefix() {
 				found = true
 				break
 			}
@@ -128,13 +157,15 @@ func (d *Discover) Refresh() (all, added, removed []*Container, err error) {
 	d.proxyList = all
 	for _, service := range removed {
 		host := service.HostPrefix() + d.HostSuff
-		delete(d.proxyMap, host)
+		delete(d.proxyAll, host)
+		delete(d.proxyReverse, host)
 		InfoLog("Discover remove %v for service down", host)
 	}
 	for _, service := range added {
 		host := service.HostPrefix() + d.HostSuff
 		proxy := httputil.NewSingleHostReverseProxy(service.Address)
-		d.proxyMap[host] = proxy
+		d.proxyAll[host] = service
+		d.proxyReverse[host] = proxy
 		InfoLog("Discover add %v for service up", host)
 	}
 	return
@@ -145,17 +176,14 @@ func (d *Discover) Discove() (containers []*Container, err error) {
 	if err != nil {
 		return
 	}
-	defer cli.Close()
 	containerList, err := cli.ContainerList(context.Background(), types.ContainerListOptions{
-		Filters: filters.NewArgs(filters.Arg("name", fmt.Sprintf("^.*%vv[0-9\\.]*$", d.MatchKey))),
+		All:     true,
+		Filters: filters.NewArgs(filters.Arg("name", fmt.Sprintf("^.*%vv[0-9\\.]*.*$", d.MatchKey))),
 	})
 	if err != nil {
 		return
 	}
 	for _, c := range containerList {
-		if c.State != "running" {
-			continue
-		}
 		inspect, xerr := cli.ContainerInspect(context.Background(), c.ID)
 		if xerr != nil {
 			err = xerr
@@ -163,15 +191,36 @@ func (d *Discover) Discove() (containers []*Container, err error) {
 		}
 		name := strings.TrimPrefix(inspect.Name, "/")
 		nameParts := strings.SplitN(name, d.MatchKey, 2)
+		verParts := strings.SplitN(nameParts[1], "-", 2)
 		index := 0
+		if len(inspect.NetworkSettings.Ports) < 1 {
+			address, _ := url.Parse(fmt.Sprintf("http://%v:%v", remoteHost, 1))
+			container := &Container{
+				ID:      c.ID,
+				Name:    nameParts[0],
+				Version: verParts[0],
+				Address: address,
+				Index:   index,
+				Port:    "1",
+			}
+			if len(verParts) > 1 {
+				container.Token = verParts[1]
+			}
+			containers = append(containers, container)
+			continue
+		}
 		for private, ports := range inspect.NetworkSettings.Ports {
 			address, _ := url.Parse(fmt.Sprintf("http://%v:%v", remoteHost, ports[0].HostPort))
 			container := &Container{
+				ID:      c.ID,
 				Name:    nameParts[0],
-				Version: nameParts[1],
+				Version: verParts[0],
 				Address: address,
 				Index:   index,
 				Port:    private.Port(),
+			}
+			if len(verParts) > 1 {
+				container.Token = verParts[1]
 			}
 			containers = append(containers, container)
 			index++
@@ -180,12 +229,110 @@ func (d *Discover) Discove() (containers []*Container, err error) {
 	return
 }
 
+func (d *Discover) procDockerLogs(w http.ResponseWriter, r *http.Request, service *Container) {
+	proc := func(c *websocket.Conn) {
+		defer c.Close()
+		cli, _, err := d.newDockerClient()
+		if err != nil {
+			WarnLog("proc %v coitainer log fail with %v", service.Name, err)
+			fmt.Fprintf(c, "new docker client fail with %v", err)
+			return
+		}
+		reader, err := cli.ContainerLogs(context.Background(), service.ID, types.ContainerLogsOptions{
+			ShowStdout: r.Form.Get("stdout") != "0",
+			ShowStderr: r.Form.Get("stderr") != "0",
+			Since:      r.Form.Get("since"),
+			Until:      r.Form.Get("until"),
+			Timestamps: r.Form.Get("timestamps") == "1",
+			Follow:     r.Form.Get("follow") == "1",
+			Tail:       r.Form.Get("tail"),
+			Details:    r.Form.Get("details") == "1",
+		})
+		if err != nil {
+			WarnLog("proc %v coitainer log fail with %v", service.Name, err)
+			fmt.Fprintf(c, "proc docker log fail with %v", err)
+			return
+		}
+		stdcopy.StdCopy(c, c, reader)
+	}
+	wsService := websocket.Server{
+		Handler: proc,
+	}
+	r.ParseForm()
+	wsService.ServeHTTP(w, r)
+}
+
+func (d *Discover) procDockerControl(w http.ResponseWriter, r *http.Request, service *Container, action string) {
+	cli, _, err := d.newDockerClient()
+	if err != nil {
+		WarnLog("proc %v coitainer restart fail with %v", service.Name, err)
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "new docker client fail with %v", err)
+		return
+	}
+	timeout := 10 * time.Second
+	result := ""
+	switch action {
+	case "docker/start":
+		err = cli.ContainerStart(context.Background(), service.ID, types.ContainerStartOptions{})
+		result = "ok"
+	case "docker/stop":
+		err = cli.ContainerStop(context.Background(), service.ID, &timeout)
+		result = "ok"
+	case "docker/restart":
+		err = cli.ContainerRestart(context.Background(), service.ID, &timeout)
+		result = "ok"
+	case "docker/ps":
+		var info types.ContainerJSON
+		info, err = cli.ContainerInspect(context.Background(), service.ID)
+		if err == nil {
+			result = fmt.Sprintf("%v\t%v\t%v\t%v\n", strings.TrimPrefix(info.Name, "/"), info.Config.Image, info.Created, info.State.Status)
+		}
+	}
+	if err != nil {
+		WarnLog("proc %v coitainer restart fail with %v", service.Name, err)
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "proc docker log fail with %v", err)
+		return
+	}
+	fmt.Fprintf(w, "%v", result)
+}
+
+func (d *Discover) procServer(w http.ResponseWriter, r *http.Request, service *Container) {
+	username, password, ok := r.BasicAuth()
+	if !ok {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprintf(w, "unauthorized")
+		return
+	}
+	if username != service.Name || password != service.Token {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprintf(w, "invalid password")
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, d.SrvPrefix)
+	path = strings.Trim(path, "/")
+	switch path {
+	case "docker/logs":
+		d.procDockerLogs(w, r, service)
+	case "docker/start", "docker/stop", "docker/restart", "docker/ps":
+		d.procDockerControl(w, r, service, path)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
 func (d *Discover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	d.proxyLock.RLock()
-	proxy := d.proxyMap[r.Host]
+	service := d.proxyAll[r.Host]
+	reverse := d.proxyReverse[r.Host]
 	d.proxyLock.RUnlock()
-	if proxy != nil {
-		proxy.ServeHTTP(w, r)
+	if service != nil && reverse != nil {
+		if strings.HasPrefix(r.URL.Path, d.SrvPrefix) {
+			d.procServer(w, r, service)
+		} else {
+			reverse.ServeHTTP(w, r)
+		}
 		return
 	}
 	w.Header().Add("Content-Type", "text/plain; charset=utf-8")
@@ -193,7 +340,7 @@ func (d *Discover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "%v not found\n\n", r.Host)
 	d.proxyLock.RLock()
 	fmt.Fprintf(w, "Having:\n")
-	for having := range d.proxyMap {
+	for having := range d.proxyAll {
 		fmt.Fprintf(w, "\t%v\n", having)
 	}
 	d.proxyLock.RUnlock()
