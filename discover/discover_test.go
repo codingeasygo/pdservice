@@ -53,7 +53,7 @@ func TestDiscover(t *testing.T) {
 			docker exec docker-discover docker start ds-srv-v1.0.0-abc
 			docker exec docker-discover docker start ds-srv-v1.0.1
 		`))
-		all, added, removed, err := discover.Refresh()
+		all, added, _, removed, err := discover.Refresh()
 		if err != nil || len(all) != 2 || len(added) != 2 || len(removed) != 0 {
 			fmt.Printf("all->%v\nadded->%v\nremoved-->%v\n\n", all, added, removed)
 			t.Error(err)
@@ -89,8 +89,8 @@ func TestDiscover(t *testing.T) {
 		fmt.Println(callScript(`
 			docker exec docker-discover docker stop ds-srv-v1.0.0-abc
 		`))
-		all, added, removed, err := discover.Refresh()
-		if err != nil || len(all) != 2 || len(added) != 0 || len(removed) != 0 {
+		all, added, updated, removed, err := discover.Refresh()
+		if err != nil || len(all) != 2 || len(added) != 0 || len(updated) != 1 || len(removed) != 0 {
 			fmt.Printf("all->%v\nadded->%v\nremoved-->%v\n\n", all, added, removed)
 			t.Error(err)
 			return

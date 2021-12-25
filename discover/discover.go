@@ -122,23 +122,28 @@ func (d *Discover) newDockerClient() (cli *client.Client, remoteHost string, err
 	return
 }
 
-func (d *Discover) Refresh() (all, added, removed []*Container, err error) {
+func (d *Discover) Refresh() (all, added, updated, removed []*Container, err error) {
 	all, err = d.Discove()
 	if err != nil {
 		return
 	}
 	for _, having := range all {
 		found := false
-		for _, old := range d.proxyList {
+		var old *Container
+		for _, old = range d.proxyList {
 			if having.HostPrefix() == old.HostPrefix() {
 				found = true
-				old.ID = having.ID
 				break
 			}
 		}
 		if !found {
 			added = append(added, having)
+			continue
 		}
+		if having.Address.Host == old.Address.Host {
+			continue
+		}
+		updated = append(updated, having)
 	}
 	for _, old := range d.proxyList {
 		found := false
@@ -160,6 +165,13 @@ func (d *Discover) Refresh() (all, added, removed []*Container, err error) {
 		delete(d.proxyAll, host)
 		delete(d.proxyReverse, host)
 		InfoLog("Discover remove %v for service down", host)
+	}
+	for _, service := range updated {
+		host := service.HostPrefix() + d.HostSuff
+		proxy := httputil.NewSingleHostReverseProxy(service.Address)
+		d.proxyAll[host] = service
+		d.proxyReverse[host] = proxy
+		InfoLog("Discover update %v for service updated", host)
 	}
 	for _, service := range added {
 		host := service.HostPrefix() + d.HostSuff
@@ -369,12 +381,12 @@ func (d *Discover) callRefresh(onAdded, onRemoved string) {
 			ErrorLog("call refresh panic with %v, call stack is:\n%v", xerr, debug.CallStatck())
 		}
 	}()
-	all, added, removed, err := d.Refresh()
+	all, added, updated, removed, err := d.Refresh()
 	if err != nil {
 		ErrorLog("call refresh fail with %v", err)
 		return
 	}
-	DebugLog("call refresh success with all:%v,added:%v,removed:%v", len(all), len(added), len(removed))
+	DebugLog("call refresh success with all:%v,added:%v,updated:%v,removed:%v", len(all), len(added), len(updated), len(removed))
 	if len(added) > 0 && len(onAdded) > 0 {
 		d.callTrigger(added, "added", onAdded)
 	}
