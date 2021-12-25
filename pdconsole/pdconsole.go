@@ -97,20 +97,28 @@ func dockerLogs(server string) {
 	io.Copy(os.Stdout, conn)
 }
 
+func usage() {
+	fmt.Printf("Usage: pdconsole COMMAND [OPTIONS]\n")
+	fmt.Printf("       pdconsole docker COMMAND [OPTIONS]     to control container\n")
+	fmt.Printf("       pdconsole docker start                 to start container\n")
+	fmt.Printf("       pdconsole docker stop                  to stop container\n")
+	fmt.Printf("       pdconsole docker restart               to restart container\n")
+	fmt.Printf("       pdconsole docker logs [OPTIONS]        to show container log\n")
+}
+
 func main() {
 	server := os.Getenv("PDSERVER")
 	if len(server) < 1 {
 		fmt.Printf("enviroment PDSERVER=http(s)://pdserver-address is required\n")
 		os.Exit(1)
 	}
-	if len(os.Args) < 2 || os.Args[1] == "-h" || os.Args[1] == "--help" {
-		fmt.Printf("Usage: pdconsole COMMAND [OPTIONS]\n")
-		fmt.Printf("       pdconsole docker COMMAND [OPTIONS]     to control container\n")
-		fmt.Printf("       pdconsole docker start                 to start container\n")
-		fmt.Printf("       pdconsole docker stop                  to stop container\n")
-		fmt.Printf("       pdconsole docker restart               to restart container\n")
-		fmt.Printf("       pdconsole docker logs [OPTIONS]        to show container log\n")
+	if len(os.Args) < 2 {
+		usage()
 		os.Exit(1)
+	}
+	if os.Args[1] == "-h" || os.Args[1] == "--help" {
+		usage()
+		os.Exit(0)
 	}
 	switch os.Args[1] {
 	case "docker":
