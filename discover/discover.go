@@ -12,31 +12,30 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codingeasygo/util/converter"
 	"github.com/codingeasygo/util/debug"
 	"github.com/codingeasygo/util/xprop"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/docker/go-connections/nat"
 	"github.com/docker/go-connections/tlsconfig"
 	"golang.org/x/net/websocket"
 )
 
-type Container struct {
-	ID      string   `json:"id"`
-	Name    string   `json:"name"`
-	Version string   `json:"version"`
+type Forward struct {
 	Address *url.URL `json:"-"`
-	Index   int      `json:"index"`
-	Port    string   `json:"port"`
-	Token   string   `json:"token"`
+	Key     string   `json:"key"`
+	Prefix  string   `json:"prefix"`
 }
 
-func (c *Container) HostPrefix() string {
-	if c.Index == 0 {
-		return fmt.Sprintf("%v.%v", strings.ReplaceAll(c.Version, ".", ""), c.Name)
-	}
-	return fmt.Sprintf("%v.%v%v", strings.ReplaceAll(c.Version, ".", ""), c.Name, c.Index)
+type Container struct {
+	ID       string              `json:"id"`
+	Name     string              `json:"name"`
+	Version  string              `json:"version"`
+	Token    string              `json:"token"`
+	Forwards map[string]*Forward `json:"forwards"`
 }
 
 type Discover struct {
@@ -52,7 +51,6 @@ type Discover struct {
 	clientHost   string
 	clientLatest time.Time
 	clientLock   sync.RWMutex
-	proxyList    []*Container
 	proxyAll     map[string]*Container
 	proxyReverse map[string]*httputil.ReverseProxy
 	proxyLock    sync.RWMutex
@@ -89,6 +87,7 @@ func (d *Discover) newDockerClient() (cli *client.Client, remoteHost string, err
 		info, xerr := exec.Command(d.TriggerBash, d.DockerFinder).Output()
 		if xerr != nil {
 			err = xerr
+			ErrorLog("call finder fail with %v by bash:%v,finder:%v", err, d.TriggerBash, d.DockerFinder)
 			return
 		}
 		conf := xprop.NewConfig()
@@ -122,68 +121,53 @@ func (d *Discover) newDockerClient() (cli *client.Client, remoteHost string, err
 	return
 }
 
-func (d *Discover) Refresh() (all, added, updated, removed []*Container, err error) {
+func (d *Discover) Refresh() (all, added, updated, removed map[string]*Container, err error) {
 	all, err = d.Discove()
 	if err != nil {
 		return
 	}
-	for _, having := range all {
-		found := false
-		var old *Container
-		for _, old = range d.proxyList {
-			if having.HostPrefix() == old.HostPrefix() {
-				found = true
-				break
-			}
-		}
-		if !found {
-			added = append(added, having)
-			continue
-		}
-		if having.Address.Host == old.Address.Host {
-			continue
-		}
-		updated = append(updated, having)
-	}
-	for _, old := range d.proxyList {
-		found := false
-		for _, having := range all {
-			if having.HostPrefix() == old.HostPrefix() {
-				found = true
-				break
-			}
-		}
-		if !found {
-			removed = append(removed, old)
-		}
-	}
 	d.proxyLock.Lock()
 	defer d.proxyLock.Unlock()
-	d.proxyList = all
-	for _, service := range removed {
-		host := service.HostPrefix() + d.HostSuff
-		delete(d.proxyAll, host)
-		delete(d.proxyReverse, host)
-		InfoLog("Discover remove %v for service down", host)
+	added = map[string]*Container{}
+	updated = map[string]*Container{}
+	removed = map[string]*Container{}
+	oldAll := d.proxyAll
+	newAll := map[string]*Container{}
+	for prefix, service := range all {
+		if newForward, ok := service.Forwards[prefix]; ok {
+			host := newForward.Prefix + d.HostSuff
+			if old, ok := oldAll[host]; ok {
+				if oldForward, ok := old.Forwards[newForward.Prefix]; ok && oldForward.Address.Host != newForward.Address.Host { //updated
+					proxy := httputil.NewSingleHostReverseProxy(newForward.Address)
+					d.proxyReverse[host] = proxy
+					updated[newForward.Prefix] = service
+					InfoLog("Discover update %v for service updated", host)
+				}
+			} else { //new
+				proxy := httputil.NewSingleHostReverseProxy(newForward.Address)
+				d.proxyReverse[host] = proxy
+				added[newForward.Prefix] = service
+				InfoLog("Discover add %v for service up", host)
+			}
+			newAll[host] = service
+		}
 	}
-	for _, service := range updated {
-		host := service.HostPrefix() + d.HostSuff
-		proxy := httputil.NewSingleHostReverseProxy(service.Address)
-		d.proxyAll[host] = service
-		d.proxyReverse[host] = proxy
-		InfoLog("Discover update %v for service updated", host)
+	for host, service := range oldAll {
+		prefix := strings.TrimSuffix(host, d.HostSuff)
+		if oldForward, ok := service.Forwards[prefix]; ok {
+			host := oldForward.Prefix + d.HostSuff
+			if _, ok := all[oldForward.Prefix]; !ok { //deleted
+				delete(d.proxyReverse, host)
+				removed[oldForward.Prefix] = service
+				InfoLog("Discover remove %v for service down", host)
+			}
+		}
 	}
-	for _, service := range added {
-		host := service.HostPrefix() + d.HostSuff
-		proxy := httputil.NewSingleHostReverseProxy(service.Address)
-		d.proxyAll[host] = service
-		d.proxyReverse[host] = proxy
-		InfoLog("Discover add %v for service up", host)
-	}
+	d.proxyAll = newAll
 	return
 }
 
-func (d *Discover) Discove() (containers []*Container, err error) {
+func (d *Discover) Discove() (containers map[string]*Container, err error) {
 	cli, remoteHost, err := d.newDockerClient()
 	if err != nil {
 		return
@@ -195,6 +179,7 @@ func (d *Discover) Discove() (containers []*Container, err error) {
 	if err != nil {
 		return
 	}
+	containers = map[string]*Container{}
 	for _, c := range containerList {
 		inspect, xerr := cli.ContainerInspect(context.Background(), c.ID)
 		if xerr != nil {
@@ -204,38 +189,44 @@ func (d *Discover) Discove() (containers []*Container, err error) {
 		name := strings.TrimPrefix(inspect.Name, "/")
 		nameParts := strings.SplitN(name, d.MatchKey, 2)
 		verParts := strings.SplitN(nameParts[1], "-", 2)
-		index := 0
-		if len(inspect.NetworkSettings.Ports) < 1 {
-			address, _ := url.Parse(fmt.Sprintf("http://%v:%v", remoteHost, 1))
-			container := &Container{
-				ID:      c.ID,
-				Name:    nameParts[0],
-				Version: verParts[0],
-				Address: address,
-				Index:   index,
-				Port:    "1",
-			}
-			if len(verParts) > 1 {
-				container.Token = verParts[1]
-			}
-			containers = append(containers, container)
-			continue
+		container := &Container{
+			ID:       c.ID,
+			Name:     nameParts[0],
+			Version:  verParts[0],
+			Forwards: map[string]*Forward{},
 		}
-		for private, ports := range inspect.NetworkSettings.Ports {
-			address, _ := url.Parse(fmt.Sprintf("http://%v:%v", remoteHost, ports[0].HostPort))
-			container := &Container{
-				ID:      c.ID,
-				Name:    nameParts[0],
-				Version: verParts[0],
+		for key, val := range inspect.Config.Labels {
+			if key == "PD_SERVICE_TOKEN" {
+				container.Token = val
+				continue
+			}
+			if !strings.HasPrefix(key, "PD_HOST") { //PD_HOST or PD_HOST_*
+				continue
+			}
+			portKey := fmt.Sprintf("%v/tcp", val)
+			portMap := inspect.NetworkSettings.Ports[nat.Port(portKey)]
+			if portMap == nil {
+				WarnLog("Discover parse container %v lable %v=%v fail with %v, all is %v", name, key, val, "port is not found", converter.JSON(inspect.NetworkSettings.Ports))
+				continue
+			}
+			hostKey := strings.TrimPrefix(strings.TrimPrefix(key, "PD_HOST"), "_")
+			hostPort := portMap[0].HostPort
+			address, xerr := url.Parse(fmt.Sprintf("http://%v:%v", remoteHost, hostPort))
+			if xerr != nil {
+				WarnLog("Discover parse container %v lable %v=%v fail with %v", name, key, hostPort, xerr)
+				continue
+			}
+			forward := &Forward{
 				Address: address,
-				Index:   index,
-				Port:    private.Port(),
+				Key:     hostKey,
 			}
-			if len(verParts) > 1 {
-				container.Token = verParts[1]
+			if len(hostKey) > 0 {
+				forward.Prefix = fmt.Sprintf("%v.%v.%v", hostKey, strings.ReplaceAll(container.Version, ".", ""), container.Name)
+			} else {
+				forward.Prefix = fmt.Sprintf("%v.%v", strings.ReplaceAll(container.Version, ".", ""), container.Name)
 			}
-			containers = append(containers, container)
-			index++
+			container.Forwards[forward.Prefix] = forward
+			containers[forward.Prefix] = container
 		}
 	}
 	return
@@ -395,19 +386,20 @@ func (d *Discover) callRefresh(onAdded, onRemoved string) {
 	}
 }
 
-func (d *Discover) callTrigger(services []*Container, name, trigger string) {
+func (d *Discover) callTrigger(services map[string]*Container, name, trigger string) {
 	for _, service := range services {
-		cmd := exec.Command(d.TriggerBash, trigger)
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_VER", service.Version))
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_NAME", service.Name))
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_INDEX", service.Index))
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_HOST", service.Address.Host))
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_PREF", service.HostPrefix()))
-		info, xerr := cmd.Output()
-		if xerr != nil {
-			WarnLog("call refresh trigger %v fail with %v by\n\tCMD:%v\n\tENV:%v\n\tOut:\n%v", name, xerr, cmd.Path, cmd.Env, string(info))
-		} else {
-			InfoLog("call refresh trigger %v success by\n\tCMD:%v\n\tENV:%v\n\tOut:\n%v", name, cmd.Path, cmd.Env, string(info))
+		for _, forward := range service.Forwards {
+			cmd := exec.Command(d.TriggerBash, trigger)
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_VER", service.Version))
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_NAME", service.Name))
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_HOST", forward.Address.Host))
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_PREF", forward.Prefix))
+			info, xerr := cmd.Output()
+			if xerr != nil {
+				WarnLog("call refresh trigger %v fail with %v by\n\tCMD:%v\n\tENV:%v\n\tOut:\n%v", name, xerr, cmd.Path, cmd.Env, string(info))
+			} else {
+				InfoLog("call refresh trigger %v success by\n\tCMD:%v\n\tENV:%v\n\tOut:\n%v", name, cmd.Path, cmd.Env, string(info))
+			}
 		}
 	}
 }

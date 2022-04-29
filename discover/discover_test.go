@@ -37,6 +37,18 @@ func basicAuth(username, password string) string {
 }
 
 func TestDiscover(t *testing.T) {
+	{ //clear
+		fmt.Println(callScript(`
+			docker exec docker-discover docker rm -f ds-srv-v1.0.0
+			docker exec docker-discover docker rm -f ds-srv-v1.0.1
+			docker exec docker-discover docker rm -f ds-srv-v1.0.2
+		`))
+		time.Sleep(time.Millisecond * 10)
+		fmt.Println(callScript(`
+			docker exec docker-discover docker run -d --label PD_HOST=80 --label PD_SERVICE_TOKEN=abc --name ds-srv-v1.0.0 --restart always -P nginx
+			docker exec docker-discover docker run -d --label PD_HOST=80 --name ds-srv-v1.0.1 --restart always -P nginx
+		`))
+	}
 	pwd, _ := os.Getwd()
 	dockerHost := callScript(`docker inspect --format="{{.NetworkSettings.IPAddress}}" docker-discover`)
 	dockerCert := filepath.Join(pwd, "../test/certs/client")
@@ -45,12 +57,13 @@ func TestDiscover(t *testing.T) {
 	discover := NewDiscover()
 	discover.HostSuff = hostSuff
 	{
+		fmt.Println("--> test container up")
 		discover.DockerFinder = ""
 		discover.DockerCert = dockerCert
 		discover.DockerAddr = dockerAddr
 		discover.DockerHost = dockerHost
 		fmt.Println(callScript(`
-			docker exec docker-discover docker start ds-srv-v1.0.0-abc
+			docker exec docker-discover docker start ds-srv-v1.0.0
 			docker exec docker-discover docker start ds-srv-v1.0.1
 		`))
 		all, added, _, removed, err := discover.Refresh()
@@ -82,23 +95,24 @@ func TestDiscover(t *testing.T) {
 		}
 	}
 	{
+		fmt.Println("--> test container down")
 		discover.DockerFinder = "./finder.sh"
 		discover.DockerCert = ""
 		discover.DockerAddr = ""
 		discover.DockerHost = ""
 		fmt.Println(callScript(`
-			docker exec docker-discover docker stop ds-srv-v1.0.0-abc
+			docker exec docker-discover docker stop ds-srv-v1.0.0
 		`))
 		all, added, updated, removed, err := discover.Refresh()
-		if err != nil || len(all) != 2 || len(added) != 0 || len(updated) != 1 || len(removed) != 0 {
-			fmt.Printf("all->%v\nadded->%v\nremoved-->%v\n\n", all, added, removed)
+		if err != nil || len(all) != 1 || len(added) != 0 || len(updated) != 0 || len(removed) != 1 {
+			fmt.Printf("all->%v\nadded->%v\nupdated-->%v\nremoved-->%v\n\n", all, added, updated, removed)
 			t.Error(err)
 			return
 		}
 		req1 := httptest.NewRequest("GET", "http://v100.ds.test.loc/", nil)
 		res1 := httptest.NewRecorder()
 		discover.ServeHTTP(res1, req1)
-		if res1.Result().StatusCode != http.StatusBadGateway {
+		if res1.Result().StatusCode != http.StatusBadGateway && res1.Result().StatusCode != http.StatusNotFound {
 			t.Error(res1.Body.String())
 			return
 		}
@@ -111,18 +125,63 @@ func TestDiscover(t *testing.T) {
 		}
 	}
 	{
+		fmt.Println("--> test container multi host")
+		discover.DockerFinder = ""
+		discover.DockerCert = dockerCert
+		discover.DockerAddr = dockerAddr
+		discover.DockerHost = dockerHost
 		fmt.Println(callScript(`
-			docker exec docker-discover docker rm -f ds-srv-v1.0.0-abc
+			docker exec docker-discover docker rm -f ds-srv-v1.0.0
 			docker exec docker-discover docker rm -f ds-srv-v1.0.1
+			docker exec docker-discover docker rm -f ds-srv-v1.0.2
+		`))
+		discover.Refresh()
+		fmt.Println(callScript(`
+			docker exec docker-discover docker run -d --label PD_HOST=80 --label PD_HOST_a0=80 --label PD_HOST_a1=80 --name ds-srv-v1.0.2 --restart always -P nginx
+		`))
+		time.Sleep(100 * time.Millisecond)
+		all, added, updated, removed, err := discover.Refresh()
+		if err != nil || len(all) != 3 || len(added) != 3 || len(updated) != 0 || len(removed) != 0 {
+			fmt.Printf("all->%v\nadded->%v\nupdated-->%v\nremoved-->%v\n\n", all, added, updated, removed)
+			t.Error(err)
+			return
+		}
+		req1 := httptest.NewRequest("GET", "http://v102.ds.test.loc/", nil)
+		res1 := httptest.NewRecorder()
+		discover.ServeHTTP(res1, req1)
+		if !strings.Contains(res1.Body.String(), "nginx") {
+			t.Error(res1.Body.String())
+			return
+		}
+		req2 := httptest.NewRequest("GET", "http://a0.v102.ds.test.loc/", nil)
+		res2 := httptest.NewRecorder()
+		discover.ServeHTTP(res2, req2)
+		if !strings.Contains(res2.Body.String(), "nginx") {
+			t.Error(res2.Body.String())
+			return
+		}
+		req3 := httptest.NewRequest("GET", "http://a0.v102.ds.test.loc/", nil)
+		res3 := httptest.NewRecorder()
+		discover.ServeHTTP(res3, req3)
+		if !strings.Contains(res2.Body.String(), "nginx") {
+			t.Error(res2.Body.String())
+			return
+		}
+	}
+	{
+		fmt.Println(callScript(`
+			docker exec docker-discover docker rm -f ds-srv-v1.0.0
+			docker exec docker-discover docker rm -f ds-srv-v1.0.1
+			docker exec docker-discover docker rm -f ds-srv-v1.0.2
 		`))
 		discover.StartRefresh(time.Millisecond*10, "./trigger.sh", "./trigger.sh")
 		time.Sleep(time.Millisecond * 10)
 		fmt.Println(callScript(`
-			docker exec docker-discover docker run -d --name ds-srv-v1.0.0-abc --restart always -P nginx
-			docker exec docker-discover docker run -d --name ds-srv-v1.0.1 --restart always -P nginx
+			docker exec docker-discover docker run -d --label PD_HOST=80 --label PD_SERVICE_TOKEN=abc --name ds-srv-v1.0.0 --restart always -P nginx
+			docker exec docker-discover docker run -d --label PD_HOST=80 --name ds-srv-v1.0.1 --restart always -P nginx
 		`))
 		fmt.Println(callScript(`
-			docker exec docker-discover docker start ds-srv-v1.0.0-abc
+			docker exec docker-discover docker start ds-srv-v1.0.0
 		`))
 		time.Sleep(time.Millisecond * 10)
 		fmt.Println(callScript(`
@@ -133,8 +192,9 @@ func TestDiscover(t *testing.T) {
 	}
 	{ //control
 		fmt.Println(callScript(`
-			docker exec docker-discover docker start ds-srv-v1.0.0-abc
+			docker exec docker-discover docker start ds-srv-v1.0.0
 		`))
+		discover.Refresh()
 		{
 			req := httptest.NewRequest("GET", "http://v100.ds.test.loc/_s/docker/stop", nil)
 			req.Header.Set("Authorization", "Basic "+basicAuth("ds", "abc"))
@@ -207,7 +267,7 @@ func TestDiscover(t *testing.T) {
 	}
 	{ //log
 		fmt.Println(callScript(`
-			docker exec docker-discover docker start ds-srv-v1.0.0-abc
+			docker exec docker-discover docker start ds-srv-v1.0.0
 		`))
 		ts := httptest.NewServer(discover)
 		dialer := xnet.NewWebsocketDialer()
