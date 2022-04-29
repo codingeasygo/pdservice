@@ -87,7 +87,7 @@ func (d *Discover) newDockerClient() (cli *client.Client, remoteHost string, err
 		info, xerr := exec.Command(d.TriggerBash, d.DockerFinder).Output()
 		if xerr != nil {
 			err = xerr
-			ErrorLog("call finder fail with %v by bash:%v,finder:%v", err, d.TriggerBash, d.DockerFinder)
+			ErrorLog("Discover call finder fail with %v by bash:%v,finder:%v", err, d.TriggerBash, d.DockerFinder)
 			return
 		}
 		conf := xprop.NewConfig()
@@ -232,16 +232,16 @@ func (d *Discover) Discove() (containers map[string]*Container, err error) {
 	return
 }
 
-func (d *Discover) procDockerLogs(w http.ResponseWriter, r *http.Request, service *Container) {
+func (d *Discover) procDockerLogs(w http.ResponseWriter, r *http.Request, service *Container, containerID string) {
 	proc := func(c *websocket.Conn) {
 		defer c.Close()
 		cli, _, err := d.newDockerClient()
 		if err != nil {
-			WarnLog("proc %v coitainer log fail with %v", service.Name, err)
+			WarnLog("Discover proc %v coitainer log fail with %v", service.Name, err)
 			fmt.Fprintf(c, "new docker client fail with %v", err)
 			return
 		}
-		reader, err := cli.ContainerLogs(context.Background(), service.ID, types.ContainerLogsOptions{
+		reader, err := cli.ContainerLogs(context.Background(), containerID, types.ContainerLogsOptions{
 			ShowStdout: r.Form.Get("stdout") != "0",
 			ShowStderr: r.Form.Get("stderr") != "0",
 			Since:      r.Form.Get("since"),
@@ -252,7 +252,7 @@ func (d *Discover) procDockerLogs(w http.ResponseWriter, r *http.Request, servic
 			Details:    r.Form.Get("details") == "1",
 		})
 		if err != nil {
-			WarnLog("proc %v coitainer log fail with %v", service.Name, err)
+			WarnLog("Discover proc %v coitainer log fail with %v", service.Name, err)
 			fmt.Fprintf(c, "proc docker log fail with %v", err)
 			return
 		}
@@ -265,37 +265,77 @@ func (d *Discover) procDockerLogs(w http.ResponseWriter, r *http.Request, servic
 	wsService.ServeHTTP(w, r)
 }
 
-func (d *Discover) procDockerControl(w http.ResponseWriter, r *http.Request, service *Container, action string) {
+func (d *Discover) procDockerControl(w http.ResponseWriter, r *http.Request, service *Container, action, containerID string) {
 	cli, _, err := d.newDockerClient()
 	if err != nil {
-		WarnLog("proc %v coitainer restart fail with %v", service.Name, err)
+		WarnLog("Discover proc %v coitainer restart fail with %v", service.Name, err)
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(w, "new docker client fail with %v", err)
 		return
+	}
+	failResult := func(err error) {
+		WarnLog("Discover proc %v coitainer %v fail with %v", service.Name, action, err)
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "proc docker log fail with %v", err)
+	}
+	containers, err := cli.ContainerList(context.Background(), types.ContainerListOptions{
+		All:     true,
+		Filters: filters.NewArgs(filters.Arg("name", service.Name)),
+	})
+	if err != nil {
+		failResult(err)
+		return
+	}
+	accessResult := func() bool {
+		access := false
+		for _, container := range containers {
+			if container.ID == containerID || strings.TrimPrefix(container.Names[0], "/") == containerID {
+				access = true
+				break
+			}
+		}
+		if !access {
+			err = fmt.Errorf("not access")
+			WarnLog("Discover proc %v coitainer %v fail with %v", service.Name, action, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "proc docker log fail with %v", err)
+		}
+		return access
 	}
 	timeout := 10 * time.Second
 	result := ""
 	switch action {
 	case "docker/start":
-		err = cli.ContainerStart(context.Background(), service.ID, types.ContainerStartOptions{})
+		if !accessResult() {
+			return
+		}
+		err = cli.ContainerStart(context.Background(), containerID, types.ContainerStartOptions{})
 		result = "ok"
 	case "docker/stop":
-		err = cli.ContainerStop(context.Background(), service.ID, &timeout)
+		if !accessResult() {
+			return
+		}
+		err = cli.ContainerStop(context.Background(), containerID, &timeout)
 		result = "ok"
 	case "docker/restart":
-		err = cli.ContainerRestart(context.Background(), service.ID, &timeout)
+		if !accessResult() {
+			return
+		}
+		err = cli.ContainerRestart(context.Background(), containerID, &timeout)
 		result = "ok"
 	case "docker/ps":
-		var info types.ContainerJSON
-		info, err = cli.ContainerInspect(context.Background(), service.ID)
-		if err == nil {
-			result = fmt.Sprintf("%v\t%v\t%v\t%v\n", strings.TrimPrefix(info.Name, "/"), info.Config.Image, info.Created, info.State.Status)
+		result = ""
+		for _, container := range containers {
+			var info types.ContainerJSON
+			info, err = cli.ContainerInspect(context.Background(), container.ID)
+			if err != nil {
+				break
+			}
+			result += fmt.Sprintf("%v\t%v\t%v\t%v\t%v\n", container.ID, strings.TrimPrefix(info.Name, "/"), info.Config.Image, info.Created, info.State.Status)
 		}
 	}
 	if err != nil {
-		WarnLog("proc %v coitainer restart fail with %v", service.Name, err)
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, "proc docker log fail with %v", err)
+		failResult(err)
 		return
 	}
 	fmt.Fprintf(w, "%v", result)
@@ -313,13 +353,18 @@ func (d *Discover) procServer(w http.ResponseWriter, r *http.Request, service *C
 		fmt.Fprintf(w, "invalid password")
 		return
 	}
+	r.ParseForm()
+	containerID := r.FormValue("id")
+	if len(containerID) < 1 {
+		containerID = service.ID
+	}
 	path := strings.TrimPrefix(r.URL.Path, d.SrvPrefix)
 	path = strings.Trim(path, "/")
 	switch path {
 	case "docker/logs":
-		d.procDockerLogs(w, r, service)
+		d.procDockerLogs(w, r, service, containerID)
 	case "docker/start", "docker/stop", "docker/restart", "docker/ps":
-		d.procDockerControl(w, r, service, path)
+		d.procDockerControl(w, r, service, path, containerID)
 	default:
 		http.NotFound(w, r)
 	}
@@ -351,7 +396,7 @@ func (d *Discover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (d *Discover) StartRefresh(refreshTime time.Duration, onAdded, onRemoved string) {
 	d.refreshing = true
-	InfoLog("start refresh by time:%v,added:%v,removed:%v", refreshTime, onAdded, onRemoved)
+	InfoLog("Discover start refresh by time:%v,added:%v,removed:%v", refreshTime, onAdded, onRemoved)
 	go d.runRefresh(refreshTime, onAdded, onRemoved)
 }
 
@@ -369,15 +414,15 @@ func (d *Discover) runRefresh(refreshTime time.Duration, onAdded, onRemoved stri
 func (d *Discover) callRefresh(onAdded, onRemoved string) {
 	defer func() {
 		if xerr := recover(); xerr != nil {
-			ErrorLog("call refresh panic with %v, call stack is:\n%v", xerr, debug.CallStatck())
+			ErrorLog("Discover call refresh panic with %v, call stack is:\n%v", xerr, debug.CallStatck())
 		}
 	}()
 	all, added, updated, removed, err := d.Refresh()
 	if err != nil {
-		ErrorLog("call refresh fail with %v", err)
+		ErrorLog("Discover call refresh fail with %v", err)
 		return
 	}
-	DebugLog("call refresh success with all:%v,added:%v,updated:%v,removed:%v", len(all), len(added), len(updated), len(removed))
+	DebugLog("Discover call refresh success with all:%v,added:%v,updated:%v,removed:%v", len(all), len(added), len(updated), len(removed))
 	if len(added) > 0 && len(onAdded) > 0 {
 		d.callTrigger(added, "added", onAdded)
 	}
@@ -396,9 +441,9 @@ func (d *Discover) callTrigger(services map[string]*Container, name, trigger str
 			cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_PREF", forward.Prefix))
 			info, xerr := cmd.Output()
 			if xerr != nil {
-				WarnLog("call refresh trigger %v fail with %v by\n\tCMD:%v\n\tENV:%v\n\tOut:\n%v", name, xerr, cmd.Path, cmd.Env, string(info))
+				WarnLog("Discover call refresh trigger %v fail with %v by\n\tCMD:%v\n\tENV:%v\n\tOut:\n%v", name, xerr, cmd.Path, cmd.Env, string(info))
 			} else {
-				InfoLog("call refresh trigger %v success by\n\tCMD:%v\n\tENV:%v\n\tOut:\n%v", name, cmd.Path, cmd.Env, string(info))
+				InfoLog("Discover call refresh trigger %v success by\n\tCMD:%v\n\tENV:%v\n\tOut:\n%v", name, cmd.Path, cmd.Env, string(info))
 			}
 		}
 	}

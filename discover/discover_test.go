@@ -192,9 +192,23 @@ func TestDiscover(t *testing.T) {
 	}
 	{ //control
 		fmt.Println(callScript(`
-			docker exec docker-discover docker start ds-srv-v1.0.0
+			docker exec docker-discover docker rm -f ds-srv-v1.0.0
+			docker exec docker-discover docker rm -f ds-srv-v1.0.1
+			docker exec docker-discover docker rm -f ds-srv-v1.0.2
+			docker exec docker-discover docker run -d --name ds-abc-v1.0.0 --restart always -P nginx
+			docker exec docker-discover docker run -d --label PD_HOST=80 --label PD_SERVICE_TOKEN=abc --name ds-srv-v1.0.0 --restart always -P nginx
 		`))
 		discover.Refresh()
+		{
+			req := httptest.NewRequest("GET", "http://v100.ds.test.loc/_s/docker/ps", nil)
+			req.Header.Set("Authorization", "Basic "+basicAuth("ds", "abc"))
+			res := httptest.NewRecorder()
+			discover.ServeHTTP(res, req)
+			if !strings.Contains(res.Body.String(), "ds-srv-v1.0.0") || !strings.Contains(res.Body.String(), "ds-abc-v1.0.0") {
+				t.Error(res.Body.String())
+				return
+			}
+		}
 		{
 			req := httptest.NewRequest("GET", "http://v100.ds.test.loc/_s/docker/stop", nil)
 			req.Header.Set("Authorization", "Basic "+basicAuth("ds", "abc"))
@@ -226,11 +240,11 @@ func TestDiscover(t *testing.T) {
 			}
 		}
 		{
-			req := httptest.NewRequest("GET", "http://v100.ds.test.loc/_s/docker/ps", nil)
+			req := httptest.NewRequest("GET", "http://v100.ds.test.loc/_s/docker/restart?id=ds-abc-v1.0.0", nil)
 			req.Header.Set("Authorization", "Basic "+basicAuth("ds", "abc"))
 			res := httptest.NewRecorder()
 			discover.ServeHTTP(res, req)
-			if !strings.Contains(res.Body.String(), "ds-srv-v1.0.0") {
+			if res.Body.String() != "ok" {
 				t.Error(res.Body.String())
 				return
 			}

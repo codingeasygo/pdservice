@@ -20,6 +20,7 @@ type LogsArg struct {
 	Tail       string
 	Details    bool
 	Help       bool
+	ID         string
 	Flag       *flag.FlagSet
 }
 
@@ -58,11 +59,18 @@ func (l *LogsArg) Encode() string {
 	if l.Details {
 		args.Set("details", "1")
 	}
+	if len(l.ID) > 0 {
+		args.Set("id", l.ID)
+	}
 	return args.Encode()
 }
 
-func dockerControl(server, action string) {
-	res, err := xhttp.GetText("%v/docker/%v", server, action)
+func dockerControl(server string, args ...string) {
+	query := ""
+	if len(args) > 1 {
+		query = "?id=" + args[1]
+	}
+	res, err := xhttp.GetText("%v/docker/%v%v", server, args[0], query)
 	if err != nil {
 		fmt.Printf("%v\n", err)
 		os.Exit(1)
@@ -73,20 +81,22 @@ func dockerControl(server, action string) {
 	}
 }
 
-func dockerLogs(server string) {
-	args := &LogsArg{}
-	args.FlagInit()
-	args.Flag.Parse(os.Args[3:])
-	if args.Help {
+func dockerLogs(server string, args ...string) {
+	largs := &LogsArg{}
+	largs.FlagInit()
+	largs.Flag.Parse(os.Args[1:])
+	if largs.Help {
 		fmt.Printf("Usage: pdconsole docker logs [OPTIONS]\n")
 		fmt.Printf("Options:\n")
-		args.Flag.PrintDefaults()
+		largs.Flag.PrintDefaults()
 		return
 	}
-	wsURL := server + "/docker/logs?" + args.Encode()
+	if len(largs.Flag.Args()) > 0 {
+		largs.ID = largs.Flag.Arg(0)
+	}
+	wsURL := server + "/docker/logs?" + largs.Encode()
 	wsURL = strings.ReplaceAll(wsURL, "http://", "ws://")
 	wsURL = strings.ReplaceAll(wsURL, "https://", "wss://")
-	fmt.Printf("-->%v\n", wsURL)
 	wsDialer := xnet.NewWebsocketDialer()
 	conn, err := wsDialer.Dial(wsURL)
 	if err != nil {
@@ -100,10 +110,10 @@ func dockerLogs(server string) {
 func usage() {
 	fmt.Printf("Usage: pdconsole COMMAND [OPTIONS]\n")
 	fmt.Printf("       pdconsole docker COMMAND [OPTIONS]     to control container\n")
-	fmt.Printf("       pdconsole docker start                 to start container\n")
-	fmt.Printf("       pdconsole docker stop                  to stop container\n")
-	fmt.Printf("       pdconsole docker restart               to restart container\n")
-	fmt.Printf("       pdconsole docker logs [OPTIONS]        to show container log\n")
+	fmt.Printf("       pdconsole docker start id              to start container\n")
+	fmt.Printf("       pdconsole docker stop id               to stop container\n")
+	fmt.Printf("       pdconsole docker restart id            to restart container\n")
+	fmt.Printf("       pdconsole docker logs [OPTIONS] id     to show container log\n")
 }
 
 func main() {
@@ -128,10 +138,10 @@ func main() {
 		}
 		switch os.Args[2] {
 		case "start", "stop", "restart", "ps":
-			dockerControl(server, os.Args[2])
+			dockerControl(server, os.Args[2:]...)
 			return
 		case "logs":
-			dockerLogs(server)
+			dockerLogs(server, os.Args[2:]...)
 			return
 		default:
 			fmt.Printf("%v is not supported\n", os.Args[2])
