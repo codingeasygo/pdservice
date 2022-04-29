@@ -3,10 +3,10 @@ Description=Proxy Docker Server Discover
 After=network.target
 
 [Service]
-User=pdsd
+User=pds
 Restart=always
-WorkingDirectory=/home/pdsd
-ExecStart=/home/pdsd/pdservice/pdsd conf/pdservice.properties
+WorkingDirectory=/home/pds
+ExecStart=/home/pds/pdservice/service conf/pdservice.properties
 
 [Install]
 WantedBy=multi-user.target

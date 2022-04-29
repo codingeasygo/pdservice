@@ -11,15 +11,14 @@ docker run --privileged --restart always --name docker-discover -d \
     -v `pwd`/test/data:/var/lib/docker \
     docker:dind
 sleep 2 # wait started
-docker exec docker-discover docker rm -f ds-srv-v1.0.0-abc
-docker exec docker-discover docker run -d --name ds-srv-v1.0.0-abc --restart always -P nginx
+docker exec docker-discover docker rm -f ds-srv-v1.0.0
 docker exec docker-discover docker rm -f ds-srv-v1.0.1
-docker exec docker-discover docker run -d --name ds-srv-v1.0.1 --restart always -P nginx
+docker exec docker-discover docker rm -f ds-srv-v1.0.2
 #########
 echo "Running Test"
 mkdir -p build
 pkgs="\
-   github.com/codingeasygo/dockerdiscover/discover\
+   github.com/codingeasygo/pdservice/discover\
 "
 echo "mode: set" > build/all.cov
 for p in $pkgs;

@@ -2,27 +2,32 @@
 ##############################
 #####Setting Environments#####
 echo "Setting Environments"
-set -e
+set -xe
 export cpwd=`pwd`
 export LD_LIBRARY_PATH=/usr/local/lib:/usr/lib
-export PATH=$PATH:$GOPATH/bin:$HOME/bin:$GOROOT/bin
 output=$cpwd/build
 #### Package ####
+srv_ver=$1
+if [ "$srv_ver" == "" ];then
+    srv_ver=loc
+fi
 srv_name=pdservice
+build=$cpwd/build
+output=$cpwd/build/$srv_name-$srv_ver
+out_dir=$srv_name-$srv_ver
 srv_out=$output/$srv_name
+go_path=`go env GOPATH`
+go_os=`go env GOOS`
+go_arch=`go env GOARCH`
 
-rm -rf $srv_out
-mkdir -p $srv_out
-srv_ver=v0.1.0
 ##build normal
-head_sha=`git rev-parse --short HEAD`
 cat <<EOF > version.go
 package main
 
-const Version = "$srv_ver-$head_sha"
+const Version = "$srv_ver"
 EOF
 echo "Build $srv_name normal executor..."
-go build -o $srv_out/pdsd github.com/codingeasygo/pdservice	
+go build -o $srv_out/service github.com/codingeasygo/pdservice
 cp -rf conf $srv_out
 cp -rf discover/trigger.sh $srv_out/trigger_example.sh
 cp -rf discover/finder.sh $srv_out/finder_example.sh
@@ -31,10 +36,10 @@ cp -rf pdservice-install.sh pdservice.service $srv_out
 git restore version.go
 ###
 cd $output
-rm -f $srv_name-$srv_ver-$head_sha-`uname`.tar.gz
-tar -czvf $srv_name-$srv_ver-$head_sha-`uname`.tar.gz $srv_name
-if [ "$1" != "" ];then
-    scp $srv_name-$srv_ver-$head_sha-`uname`.tar.gz $1
-fi
+out_tar=$srv_name-$go_os-$go_arch-$srv_ver.tar.gz
+rm -f $out_tar
+tar -czvf $build/$out_tar $srv_name
+
 cd $cpwd
-echo "Package $srv_name-$srv_ver-$head_sha done..."
+
+echo "Package $srv_name-$go_os-$go_arch-$srv_ver done..."
