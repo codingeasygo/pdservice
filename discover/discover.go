@@ -181,6 +181,9 @@ func (d *Discover) Discove() (containers map[string]*Container, err error) {
 	}
 	containers = map[string]*Container{}
 	for _, c := range containerList {
+		if c.Status != "Running" {
+			continue
+		}
 		inspect, xerr := cli.ContainerInspect(context.Background(), c.ID)
 		if xerr != nil {
 			err = xerr
