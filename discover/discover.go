@@ -637,8 +637,8 @@ func (d *Discover) callRefresh(onAdded, onRemoved string) {
 }
 
 func (d *Discover) callTrigger(services map[string]*Container, name, trigger string) {
-	for _, service := range services {
-		for _, forward := range service.Forwards {
+	for prefix, service := range services {
+		if forward, ok := service.Forwards[prefix]; ok {
 			if forward.Type != "http" {
 				continue
 			}
