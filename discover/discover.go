@@ -25,9 +25,18 @@ import (
 )
 
 type Forward struct {
-	Address *url.URL `json:"-"`
-	Key     string   `json:"key"`
-	Prefix  string   `json:"prefix"`
+	Key    string `json:"key"`
+	Type   string `json:"type"`
+	Prefix string `json:"prefix"`
+	URI    string `json:"uri"`
+}
+
+func (f *Forward) NewReverseProxy() (proxy *httputil.ReverseProxy, err error) {
+	remote, err := url.Parse(fmt.Sprintf("http://%v", f.URI))
+	if err == nil {
+		proxy = httputil.NewSingleHostReverseProxy(remote)
+	}
+	return
 }
 
 type Container struct {
@@ -137,14 +146,24 @@ func (d *Discover) Refresh() (all, added, updated, removed map[string]*Container
 		if newForward, ok := service.Forwards[prefix]; ok {
 			host := newForward.Prefix + d.HostSuff
 			if old, ok := oldAll[host]; ok {
-				if oldForward, ok := old.Forwards[newForward.Prefix]; ok && oldForward.Address.Host != newForward.Address.Host { //updated
-					proxy := httputil.NewSingleHostReverseProxy(newForward.Address)
+				if oldForward, ok := old.Forwards[newForward.Prefix]; ok && oldForward.URI != newForward.URI { //updated
+					proxy, xerr := newForward.NewReverseProxy()
+					if xerr != nil {
+						err = xerr
+						WarnLog("Discover update %v for service updated fail with %v", host, err)
+						return
+					}
 					d.proxyReverse[host] = proxy
 					updated[newForward.Prefix] = service
 					InfoLog("Discover update %v for service updated", host)
 				}
 			} else { //new
-				proxy := httputil.NewSingleHostReverseProxy(newForward.Address)
+				proxy, xerr := newForward.NewReverseProxy()
+				if xerr != nil {
+					err = xerr
+					WarnLog("Discover update %v for service up fail with %v", host, err)
+					return
+				}
 				d.proxyReverse[host] = proxy
 				added[newForward.Prefix] = service
 				InfoLog("Discover add %v for service up", host)
@@ -203,33 +222,77 @@ func (d *Discover) Discove() (containers map[string]*Container, err error) {
 				container.Token = val
 				continue
 			}
-			if !strings.HasPrefix(key, "PD_HOST") { //PD_HOST or PD_HOST_*
+			if key != "PD_HOST" && key != "PD_TCP" && key != "PD_UDP" { //PD_HOST or PD_TCP or PD_UDP
 				continue
 			}
-			portKey := fmt.Sprintf("%v/tcp", val)
-			portMap := inspect.NetworkSettings.Ports[nat.Port(portKey)]
-			if portMap == nil {
-				WarnLog("Discover parse container %v lable %v=%v fail with %v, all is %v", name, key, val, "port is not found", converter.JSON(inspect.NetworkSettings.Ports))
-				continue
+			var forward *Forward
+			if key == "PD_HOST" {
+				valParts := strings.SplitN(val, ":", 2)
+				if len(valParts) != 2 {
+					WarnLog("Discover parse container %v lable %v=%v fail with %v, all is %v", name, key, val, "value is invalide", converter.JSON(inspect.NetworkSettings.Ports))
+					continue
+				}
+				portKey := fmt.Sprintf("%v/tcp", valParts[1])
+				portMap := inspect.NetworkSettings.Ports[nat.Port(portKey)]
+				if portMap == nil {
+					WarnLog("Discover parse container %v lable %v=%v fail with %v, all is %v", name, key, val, "port is not found", converter.JSON(inspect.NetworkSettings.Ports))
+					continue
+				}
+				hostKey := valParts[0]
+				hostPort := portMap[0].HostPort
+				forward = &Forward{
+					Type: "http",
+					Key:  hostKey,
+				}
+				if len(hostKey) > 0 {
+					forward.Prefix = fmt.Sprintf("%v.%v.%v", hostKey, strings.ReplaceAll(container.Version, ".", ""), container.Name)
+				} else {
+					forward.Prefix = fmt.Sprintf("%v.%v", strings.ReplaceAll(container.Version, ".", ""), container.Name)
+				}
+				forward.URI = fmt.Sprintf("%v:%v", remoteHost, hostPort)
+			} else if key == "PD_TCP" {
+				valParts := strings.SplitN(val, ":", 3)
+				if len(valParts) != 3 {
+					WarnLog("Discover parse container %v lable %v=%v fail with %v, all is %v", name, key, val, "value is invalide", converter.JSON(inspect.NetworkSettings.Ports))
+					continue
+				}
+				portKey := fmt.Sprintf("%v/tcp", valParts[2])
+				portMap := inspect.NetworkSettings.Ports[nat.Port(portKey)]
+				if portMap == nil {
+					WarnLog("Discover parse container %v lable %v=%v fail with %v, all is %v", name, key, val, "port is not found", converter.JSON(inspect.NetworkSettings.Ports))
+					continue
+				}
+				hostKey := valParts[0] + ":" + valParts[1]
+				hostPort := portMap[0].HostPort
+				forward = &Forward{
+					Type: "tcp",
+					Key:  hostKey,
+				}
+				forward.URI = fmt.Sprintf("%v:%v", remoteHost, hostPort)
+			} else if key == "PD_UDP" {
+				valParts := strings.SplitN(val, ":", 3)
+				if len(valParts) != 3 {
+					WarnLog("Discover parse container %v lable %v=%v fail with %v, all is %v", name, key, val, "value is invalide", converter.JSON(inspect.NetworkSettings.Ports))
+					continue
+				}
+				portKey := fmt.Sprintf("%v/udp", valParts[2])
+				portMap := inspect.NetworkSettings.Ports[nat.Port(portKey)]
+				if portMap == nil {
+					WarnLog("Discover parse container %v lable %v=%v fail with %v, all is %v", name, key, val, "port is not found", converter.JSON(inspect.NetworkSettings.Ports))
+					continue
+				}
+				hostKey := valParts[0] + ":" + valParts[1]
+				hostPort := portMap[0].HostPort
+				forward = &Forward{
+					Type: "udp",
+					Key:  hostKey,
+				}
+				forward.URI = fmt.Sprintf("%v:%v", remoteHost, hostPort)
 			}
-			hostKey := strings.TrimPrefix(strings.TrimPrefix(key, "PD_HOST"), "_")
-			hostPort := portMap[0].HostPort
-			address, xerr := url.Parse(fmt.Sprintf("http://%v:%v", remoteHost, hostPort))
-			if xerr != nil {
-				WarnLog("Discover parse container %v lable %v=%v fail with %v", name, key, hostPort, xerr)
-				continue
+			if forward != nil {
+				container.Forwards[forward.Prefix] = forward
+				containers[forward.Prefix] = container
 			}
-			forward := &Forward{
-				Address: address,
-				Key:     hostKey,
-			}
-			if len(hostKey) > 0 {
-				forward.Prefix = fmt.Sprintf("%v.%v.%v", hostKey, strings.ReplaceAll(container.Version, ".", ""), container.Name)
-			} else {
-				forward.Prefix = fmt.Sprintf("%v.%v", strings.ReplaceAll(container.Version, ".", ""), container.Name)
-			}
-			container.Forwards[forward.Prefix] = forward
-			containers[forward.Prefix] = container
 		}
 	}
 	return
@@ -440,7 +503,8 @@ func (d *Discover) callTrigger(services map[string]*Container, name, trigger str
 			cmd := exec.Command(d.TriggerBash, trigger)
 			cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_VER", service.Version))
 			cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_NAME", service.Name))
-			cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_HOST", forward.Address.Host))
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_TYPE", forward.Type))
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_HOST", forward.URI))
 			cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_PREF", forward.Prefix))
 			info, xerr := cmd.Output()
 			if xerr != nil {
