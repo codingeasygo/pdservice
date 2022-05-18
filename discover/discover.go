@@ -639,6 +639,9 @@ func (d *Discover) callRefresh(onAdded, onRemoved string) {
 func (d *Discover) callTrigger(services map[string]*Container, name, trigger string) {
 	for _, service := range services {
 		for _, forward := range service.Forwards {
+			if forward.Type != "http" {
+				continue
+			}
 			cmd := exec.Command(d.TriggerBash, trigger)
 			cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_VER", service.Version))
 			cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_NAME", service.Name))
