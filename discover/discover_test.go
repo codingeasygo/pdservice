@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codingeasygo/util/xhttp"
 	"github.com/codingeasygo/util/xnet"
 )
 
@@ -45,8 +46,8 @@ func TestDiscover(t *testing.T) {
 		`))
 		time.Sleep(time.Millisecond * 10)
 		fmt.Println(callScript(`
-			docker exec docker-discover docker run -d --label PD_HOST=80 --label PD_SERVICE_TOKEN=abc --name ds-srv-v1.0.0 --restart always -P nginx
-			docker exec docker-discover docker run -d --label PD_HOST=80 --name ds-srv-v1.0.1 --restart always -P nginx
+			docker exec docker-discover docker run -d --label PD_HOST_WWW=/:80 --label PD_TCP_WWW=:8080/:80 --label PD_UDP_WWW=:8080/:80 --label PD_SERVICE_TOKEN=abc --name ds-srv-v1.0.0 --restart always -P nginx
+			docker exec docker-discover docker run -d --label PD_HOST_WWW=:80 --label PD_TCP_WWW=:8081/:80 --label PD_UDP_WWW=:8081/:80 --name ds-srv-v1.0.1 --restart always -P nginx
 		`))
 	}
 	pwd, _ := os.Getwd()
@@ -67,7 +68,7 @@ func TestDiscover(t *testing.T) {
 			docker exec docker-discover docker start ds-srv-v1.0.1
 		`))
 		all, added, _, removed, err := discover.Refresh()
-		if err != nil || len(all) != 2 || len(added) != 2 || len(removed) != 0 {
+		if err != nil || len(all) != 6 || len(added) != 6 || len(removed) != 0 {
 			fmt.Printf("all->%v\nadded->%v\nremoved-->%v\n\n", all, added, removed)
 			t.Error(err)
 			return
@@ -93,6 +94,11 @@ func TestDiscover(t *testing.T) {
 			t.Error(res3.Body.String())
 			return
 		}
+		res4, err := xhttp.GetText("http://127.0.0.1:8080")
+		if err != nil || !strings.Contains(res4, "nginx") {
+			t.Errorf("%v,%v", err, res4)
+			return
+		}
 	}
 	{
 		fmt.Println("--> test container down")
@@ -104,7 +110,7 @@ func TestDiscover(t *testing.T) {
 			docker exec docker-discover docker stop ds-srv-v1.0.0
 		`))
 		all, added, updated, removed, err := discover.Refresh()
-		if err != nil || len(all) != 1 || len(added) != 0 || len(updated) != 0 || len(removed) != 1 {
+		if err != nil || len(all) != 3 || len(added) != 0 || len(updated) != 0 || len(removed) != 3 {
 			fmt.Printf("all->%v\nadded->%v\nupdated-->%v\nremoved-->%v\n\n", all, added, updated, removed)
 			t.Error(err)
 			return
@@ -125,6 +131,38 @@ func TestDiscover(t *testing.T) {
 		}
 	}
 	{
+		fmt.Println("--> test container update")
+		discover.DockerFinder = "./finder.sh"
+		discover.DockerCert = ""
+		discover.DockerAddr = ""
+		discover.DockerHost = ""
+		fmt.Println(callScript(`
+			docker exec docker-discover docker stop ds-srv-v1.0.1
+			docker exec docker-discover docker start ds-srv-v1.0.1
+		`))
+		time.Sleep(100 * time.Millisecond)
+		all, added, updated, removed, err := discover.Refresh()
+		if err != nil || len(all) != 3 || len(added) != 0 || len(updated) != 3 || len(removed) != 0 {
+			fmt.Printf("all->%v\nadded->%v\nupdated-->%v\nremoved-->%v\n\n", all, added, updated, removed)
+			t.Error(err)
+			return
+		}
+		req1 := httptest.NewRequest("GET", "http://v100.ds.test.loc/", nil)
+		res1 := httptest.NewRecorder()
+		discover.ServeHTTP(res1, req1)
+		if res1.Result().StatusCode != http.StatusBadGateway && res1.Result().StatusCode != http.StatusNotFound {
+			t.Error(res1.Body.String())
+			return
+		}
+		req2 := httptest.NewRequest("GET", "http://v101.ds.test.loc/", nil)
+		res2 := httptest.NewRecorder()
+		discover.ServeHTTP(res2, req2)
+		if !strings.Contains(res2.Body.String(), "nginx") {
+			t.Error(res2.Body.String())
+			return
+		}
+	}
+	{ //prefix
 		fmt.Println("--> test container multi host")
 		discover.DockerFinder = ""
 		discover.DockerCert = dockerCert
@@ -137,7 +175,7 @@ func TestDiscover(t *testing.T) {
 		`))
 		discover.Refresh()
 		fmt.Println(callScript(`
-			docker exec docker-discover docker run -d --label PD_HOST=80 --label PD_HOST_a0=80 --label PD_HOST_a1=80 --name ds-srv-v1.0.2 --restart always -P nginx
+			docker exec docker-discover docker run -d --label PD_HOST_WWW=/:80 --label PD_HOST_A0=a0/:80 --label PD_HOST_A1=a1/:80 --name ds-srv-v1.0.2 --restart always -P nginx
 		`))
 		time.Sleep(100 * time.Millisecond)
 		all, added, updated, removed, err := discover.Refresh()
@@ -177,8 +215,8 @@ func TestDiscover(t *testing.T) {
 		discover.StartRefresh(time.Millisecond*10, "./trigger.sh", "./trigger.sh")
 		time.Sleep(time.Millisecond * 10)
 		fmt.Println(callScript(`
-			docker exec docker-discover docker run -d --label PD_HOST=80 --label PD_SERVICE_TOKEN=abc --name ds-srv-v1.0.0 --restart always -P nginx
-			docker exec docker-discover docker run -d --label PD_HOST=80 --name ds-srv-v1.0.1 --restart always -P nginx
+			docker exec docker-discover docker run -d --label PD_HOST_WWW=/:80 --label PD_HOST_XX=/:8080 --label PD_TCP_XY=:0/:8080 --label PD_SERVICE_TOKEN=abc --name ds-srv-v1.0.0 --restart always -P nginx
+			docker exec docker-discover docker run -d --label PD_HOST_WWW=/:80 --label PD_HOST_XX=/:8080 --label PD_TCP_XY=:0/:8080 --label PD_TCP_ERR=:0 --name ds-srv-v1.0.1 --restart always -P nginx
 		`))
 		fmt.Println(callScript(`
 			docker exec docker-discover docker start ds-srv-v1.0.0
@@ -196,7 +234,7 @@ func TestDiscover(t *testing.T) {
 			docker exec docker-discover docker rm -f ds-srv-v1.0.1
 			docker exec docker-discover docker rm -f ds-srv-v1.0.2
 			docker exec docker-discover docker run -d --name ds-abc-v1.0.0 --restart always -P nginx
-			docker exec docker-discover docker run -d --label PD_HOST=80 --label PD_SERVICE_TOKEN=abc --name ds-srv-v1.0.0 --restart always -P nginx
+			docker exec docker-discover docker run -d --label PD_HOST_WWW=/:80 --label PD_SERVICE_TOKEN=abc --name ds-srv-v1.0.0 --restart always -P nginx
 		`))
 		discover.Refresh()
 		{

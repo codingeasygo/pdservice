@@ -7,9 +7,9 @@ export cpwd=`pwd`
 export LD_LIBRARY_PATH=/usr/local/lib:/usr/lib
 output=$cpwd/build
 #### Package ####
-srv_ver=$1
-if [ "$srv_ver" == "" ];then
-    srv_ver=loc
+srv_ver=v1.2.0
+if [ "$2" != "" ];then
+    srv_ver=$2
 fi
 srv_name=pdservice
 build=$cpwd/build
@@ -33,7 +33,7 @@ cp -rf discover/trigger.sh $srv_out/trigger_example.sh
 cp -rf discover/finder.sh $srv_out/finder_example.sh
 cp -rf pdservice-install.sh pdservice.service $srv_out
 # apidoc -i shsapi -o $srv_out/www/apidoc
-git restore version.go
+# git restore version.go
 ###
 cd $output
 out_tar=$srv_name-$go_os-$go_arch-$srv_ver.tar.gz

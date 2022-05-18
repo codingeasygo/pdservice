@@ -3,6 +3,8 @@ package discover
 import (
 	"context"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -24,7 +26,13 @@ import (
 	"golang.org/x/net/websocket"
 )
 
+func copyAndClose(src, dst net.Conn) {
+	io.Copy(dst, src)
+	dst.Close()
+}
+
 type Forward struct {
+	Name   string `json:"name"`
 	Key    string `json:"key"`
 	Type   string `json:"type"`
 	Prefix string `json:"prefix"`
@@ -47,6 +55,17 @@ type Container struct {
 	Forwards map[string]*Forward `json:"forwards"`
 }
 
+type ReverseProxy struct {
+	Reverse *httputil.ReverseProxy
+	Service *Container
+}
+
+type ListenerProxy struct {
+	TCP     net.Listener
+	UDP     *net.UDPConn
+	Service *Container
+}
+
 type Discover struct {
 	MatchKey     string
 	DockerFinder string
@@ -61,7 +80,8 @@ type Discover struct {
 	clientLatest time.Time
 	clientLock   sync.RWMutex
 	proxyAll     map[string]*Container
-	proxyReverse map[string]*httputil.ReverseProxy
+	proxyReverse map[string]*ReverseProxy
+	proxyListen  map[string]*ListenerProxy
 	proxyLock    sync.RWMutex
 	refreshing   bool
 }
@@ -73,7 +93,8 @@ func NewDiscover() (discover *Discover) {
 		SrvPrefix:    "/_s/",
 		clientLock:   sync.RWMutex{},
 		proxyAll:     map[string]*Container{},
-		proxyReverse: map[string]*httputil.ReverseProxy{},
+		proxyReverse: map[string]*ReverseProxy{},
+		proxyListen:  map[string]*ListenerProxy{},
 		proxyLock:    sync.RWMutex{},
 	}
 	return
@@ -142,43 +163,95 @@ func (d *Discover) Refresh() (all, added, updated, removed map[string]*Container
 	removed = map[string]*Container{}
 	oldAll := d.proxyAll
 	newAll := map[string]*Container{}
-	for prefix, service := range all {
-		if newForward, ok := service.Forwards[prefix]; ok {
-			host := newForward.Prefix + d.HostSuff
-			if old, ok := oldAll[host]; ok {
-				if oldForward, ok := old.Forwards[newForward.Prefix]; ok && oldForward.URI != newForward.URI { //updated
-					proxy, xerr := newForward.NewReverseProxy()
-					if xerr != nil {
-						err = xerr
-						WarnLog("Discover update %v for service updated fail with %v", host, err)
-						return
-					}
-					d.proxyReverse[host] = proxy
-					updated[newForward.Prefix] = service
-					InfoLog("Discover update %v for service updated", host)
-				}
-			} else { //new
+	procReverse := func(newForward *Forward, service *Container) {
+		host := newForward.Prefix + d.HostSuff
+		if old, ok := oldAll[newForward.Prefix]; ok {
+			if oldForward, ok := old.Forwards[newForward.Prefix]; ok && oldForward.URI != newForward.URI { //updated
 				proxy, xerr := newForward.NewReverseProxy()
 				if xerr != nil {
-					err = xerr
-					WarnLog("Discover update %v for service up fail with %v", host, err)
+					WarnLog("Discover update %v for service updated fail with %v", host, xerr)
 					return
 				}
-				d.proxyReverse[host] = proxy
-				added[newForward.Prefix] = service
-				InfoLog("Discover add %v for service up", host)
+				d.proxyReverse[host] = &ReverseProxy{Reverse: proxy, Service: service}
+				updated[newForward.Prefix] = service
+				InfoLog("Discover update %v for service updated", host)
 			}
-			newAll[host] = service
+		} else { //new
+			proxy, xerr := newForward.NewReverseProxy()
+			if xerr != nil {
+				WarnLog("Discover update %v for service up fail with %v", host, xerr)
+				return
+			}
+			d.proxyReverse[host] = &ReverseProxy{Reverse: proxy, Service: service}
+			added[newForward.Prefix] = service
+			InfoLog("Discover add %v for service up", host)
+		}
+		newAll[newForward.Prefix] = service
+	}
+	removeReverse := func(oldForward *Forward, service *Container) {
+		host := oldForward.Prefix + d.HostSuff
+		if _, ok := all[oldForward.Prefix]; !ok { //deleted
+			delete(d.proxyReverse, host)
+			removed[oldForward.Prefix] = service
+			InfoLog("Discover remove %v for service down", host)
 		}
 	}
-	for host, service := range oldAll {
-		prefix := strings.TrimSuffix(host, d.HostSuff)
+	procListen := func(newForward *Forward, service *Container) {
+		if old, ok := oldAll[newForward.Prefix]; ok {
+			if oldForward, ok := old.Forwards[newForward.Prefix]; ok && oldForward.URI == newForward.URI { //updated
+				newAll[newForward.Prefix] = service
+				return
+			}
+		}
+		switch newForward.Type {
+		case "tcp":
+			if d.removeTCP(newForward) {
+				updated[newForward.Prefix] = service
+			} else {
+				added[newForward.Prefix] = service
+			}
+			go d.procTCP(newForward, service)
+			newAll[newForward.Prefix] = service
+		case "udp":
+			if d.removeUDP(newForward) {
+				updated[newForward.Prefix] = service
+			} else {
+				added[newForward.Prefix] = service
+			}
+			go d.procUDP(newForward, service)
+			newAll[newForward.Prefix] = service
+		}
+	}
+	removeListen := func(oldForward *Forward, service *Container) {
+		switch oldForward.Type {
+		case "tcp":
+			removed[oldForward.Prefix] = service
+			d.removeTCP(oldForward)
+		case "udp":
+			removed[oldForward.Prefix] = service
+			d.removeUDP(oldForward)
+		}
+	}
+	for prefix, service := range all {
+		if newForward, ok := service.Forwards[prefix]; ok {
+			switch newForward.Type {
+			case "http":
+				procReverse(newForward, service)
+			case "tcp", "udp":
+				procListen(newForward, service)
+			}
+		}
+	}
+	for prefix, service := range oldAll {
+		if _, ok := newAll[prefix]; ok {
+			continue
+		}
 		if oldForward, ok := service.Forwards[prefix]; ok {
-			host := oldForward.Prefix + d.HostSuff
-			if _, ok := all[oldForward.Prefix]; !ok { //deleted
-				delete(d.proxyReverse, host)
-				removed[oldForward.Prefix] = service
-				InfoLog("Discover remove %v for service down", host)
+			switch oldForward.Type {
+			case "http":
+				removeReverse(oldForward, service)
+			case "tcp", "udp":
+				removeListen(oldForward, service)
 			}
 		}
 	}
@@ -200,7 +273,7 @@ func (d *Discover) Discove() (containers map[string]*Container, err error) {
 	}
 	containers = map[string]*Container{}
 	for _, c := range containerList {
-		if c.Status != "Running" {
+		if c.State != "running" {
 			continue
 		}
 		inspect, xerr := cli.ContainerInspect(context.Background(), c.ID)
@@ -222,72 +295,62 @@ func (d *Discover) Discove() (containers map[string]*Container, err error) {
 				container.Token = val
 				continue
 			}
-			if key != "PD_HOST" && key != "PD_TCP" && key != "PD_UDP" { //PD_HOST or PD_TCP or PD_UDP
-				continue
-			}
 			var forward *Forward
-			if key == "PD_HOST" {
-				valParts := strings.SplitN(val, ":", 2)
-				if len(valParts) != 2 {
-					WarnLog("Discover parse container %v lable %v=%v fail with %v, all is %v", name, key, val, "value is invalide", converter.JSON(inspect.NetworkSettings.Ports))
-					continue
+			if strings.HasPrefix(key, "PD_HOST_") {
+				hostKey := ""
+				portVal := ""
+				valParts := strings.SplitN(val, "/", 2)
+				if len(valParts) == 2 {
+					hostKey = valParts[0]
+					portVal = valParts[1]
+				} else {
+					portVal = valParts[0]
 				}
-				portKey := fmt.Sprintf("%v/tcp", valParts[1])
+				portKey := fmt.Sprintf("%v/tcp", strings.TrimPrefix(portVal, ":"))
 				portMap := inspect.NetworkSettings.Ports[nat.Port(portKey)]
 				if portMap == nil {
 					WarnLog("Discover parse container %v lable %v=%v fail with %v, all is %v", name, key, val, "port is not found", converter.JSON(inspect.NetworkSettings.Ports))
 					continue
 				}
-				hostKey := valParts[0]
 				hostPort := portMap[0].HostPort
 				forward = &Forward{
+					Name: strings.TrimPrefix(key, "PD_HOST_"),
 					Type: "http",
 					Key:  hostKey,
+					URI:  fmt.Sprintf("%v:%v", remoteHost, hostPort),
 				}
 				if len(hostKey) > 0 {
 					forward.Prefix = fmt.Sprintf("%v.%v.%v", hostKey, strings.ReplaceAll(container.Version, ".", ""), container.Name)
 				} else {
 					forward.Prefix = fmt.Sprintf("%v.%v", strings.ReplaceAll(container.Version, ".", ""), container.Name)
 				}
-				forward.URI = fmt.Sprintf("%v:%v", remoteHost, hostPort)
-			} else if key == "PD_TCP" {
-				valParts := strings.SplitN(val, ":", 3)
-				if len(valParts) != 3 {
-					WarnLog("Discover parse container %v lable %v=%v fail with %v, all is %v", name, key, val, "value is invalide", converter.JSON(inspect.NetworkSettings.Ports))
+			} else if strings.HasPrefix(key, "PD_TCP_") || strings.HasPrefix(key, "PD_UDP_") {
+				valParts := strings.SplitN(val, "/", 2)
+				if len(valParts) != 2 {
+					WarnLog("Discover parse container %v lable %v=%v fail with %v, all is %v", name, key, val, "value is invalid", converter.JSON(inspect.NetworkSettings.Ports))
 					continue
 				}
-				portKey := fmt.Sprintf("%v/tcp", valParts[2])
+				hostKey := valParts[0]
+				portVal := valParts[1]
+				portKey := fmt.Sprintf("%v/tcp", strings.TrimPrefix(portVal, ":"))
 				portMap := inspect.NetworkSettings.Ports[nat.Port(portKey)]
 				if portMap == nil {
 					WarnLog("Discover parse container %v lable %v=%v fail with %v, all is %v", name, key, val, "port is not found", converter.JSON(inspect.NetworkSettings.Ports))
 					continue
 				}
-				hostKey := valParts[0] + ":" + valParts[1]
 				hostPort := portMap[0].HostPort
 				forward = &Forward{
-					Type: "tcp",
-					Key:  hostKey,
+					Key: hostKey,
+					URI: fmt.Sprintf("%v:%v", remoteHost, hostPort),
 				}
-				forward.URI = fmt.Sprintf("%v:%v", remoteHost, hostPort)
-			} else if key == "PD_UDP" {
-				valParts := strings.SplitN(val, ":", 3)
-				if len(valParts) != 3 {
-					WarnLog("Discover parse container %v lable %v=%v fail with %v, all is %v", name, key, val, "value is invalide", converter.JSON(inspect.NetworkSettings.Ports))
-					continue
+				if strings.HasPrefix(key, "PD_TCP_") {
+					forward.Name = strings.TrimPrefix(key, "PD_TCP_")
+					forward.Type = "tcp"
+				} else {
+					forward.Name = strings.TrimPrefix(key, "PD_UDP_")
+					forward.Type = "udp"
 				}
-				portKey := fmt.Sprintf("%v/udp", valParts[2])
-				portMap := inspect.NetworkSettings.Ports[nat.Port(portKey)]
-				if portMap == nil {
-					WarnLog("Discover parse container %v lable %v=%v fail with %v, all is %v", name, key, val, "port is not found", converter.JSON(inspect.NetworkSettings.Ports))
-					continue
-				}
-				hostKey := valParts[0] + ":" + valParts[1]
-				hostPort := portMap[0].HostPort
-				forward = &Forward{
-					Type: "udp",
-					Key:  hostKey,
-				}
-				forward.URI = fmt.Sprintf("%v:%v", remoteHost, hostPort)
+				forward.Prefix = fmt.Sprintf("%v://%v", forward.Type, forward.Key)
 			}
 			if forward != nil {
 				container.Forwards[forward.Prefix] = forward
@@ -436,16 +499,92 @@ func (d *Discover) procServer(w http.ResponseWriter, r *http.Request, service *C
 	}
 }
 
+func (d *Discover) removeUDP(forward *Forward) (removed bool) {
+	if ln, ok := d.proxyListen[forward.Prefix]; ok {
+		ln.UDP.Close()
+		delete(d.proxyListen, forward.Prefix)
+		removed = true
+	}
+	return
+}
+
+func (d *Discover) procUDP(forward *Forward, service *Container) (err error) {
+	addr, err := net.ResolveUDPAddr(forward.Type, forward.Key)
+	if err != nil {
+		WarnLog("Discover forward %v://%v=>%v://%v is fail with %v", forward.Type, forward.Prefix, forward.Type, forward.URI, err)
+		return
+	}
+	local, err := net.ListenUDP(forward.Type, addr)
+	if err != nil {
+		WarnLog("Discover forward %v://%v=>%v://%v is fail with %v", forward.Type, forward.Prefix, forward.Type, forward.URI, err)
+		return
+	}
+	remote, err := net.Dial(forward.Type, forward.URI)
+	if err != nil {
+		WarnLog("Discover forward %v://%v=>%v://%v is fail with %v", forward.Type, forward.Prefix, forward.Type, forward.URI, err)
+		return
+	}
+	InfoLog("Discover forward %v://%v=>%v://%v is started on %v", forward.Type, forward.Prefix, forward.Type, forward.URI, addr)
+	d.proxyListen[forward.Prefix] = &ListenerProxy{UDP: local, Service: service}
+	defer func() {
+		remote.Close()
+		local.Close()
+		delete(d.proxyListen, forward.Prefix)
+	}()
+	go copyAndClose(local, remote)
+	copyAndClose(remote, local)
+	InfoLog("Discover forward %v://%v=>%v://%v is stopped", forward.Type, forward.Prefix, forward.Type, forward.URI)
+	return
+}
+
+func (d *Discover) removeTCP(forward *Forward) (removed bool) {
+	if ln, ok := d.proxyListen[forward.Prefix]; ok {
+		ln.TCP.Close()
+		delete(d.proxyListen, forward.Prefix)
+		removed = true
+	}
+	return
+}
+
+func (d *Discover) procTCP(forward *Forward, service *Container) (err error) {
+	ln, err := net.Listen(forward.Type, forward.Key)
+	if err != nil {
+		WarnLog("Discover forward %v://%v=>%v://%v is fail with %v", forward.Type, forward.Prefix, forward.Type, forward.URI, err)
+		return
+	}
+	d.proxyListen[forward.Prefix] = &ListenerProxy{TCP: ln, Service: service}
+	defer func() {
+		ln.Close()
+		delete(d.proxyListen, forward.Prefix)
+	}()
+	InfoLog("Discover forward %v://%v=>%v://%v is started on %v", forward.Type, forward.Prefix, forward.Type, forward.URI, ln.Addr())
+	for {
+		local, xerr := ln.Accept()
+		if xerr != nil {
+			err = xerr
+			break
+		}
+		remote, xerr := net.Dial(forward.Type, forward.URI)
+		if xerr != nil {
+			WarnLog("Discover dial to %v://%v fail with %v", forward.Type, forward.URI, xerr)
+			return
+		}
+		go copyAndClose(local, remote)
+		go copyAndClose(remote, local)
+	}
+	InfoLog("Discover forward %v://%v=>%v://%v is stopped", forward.Type, forward.Prefix, forward.Type, forward.URI)
+	return
+}
+
 func (d *Discover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	d.proxyLock.RLock()
-	service := d.proxyAll[r.Host]
 	reverse := d.proxyReverse[r.Host]
 	d.proxyLock.RUnlock()
-	if service != nil && reverse != nil {
+	if reverse != nil {
 		if strings.HasPrefix(r.URL.Path, d.SrvPrefix) {
-			d.procServer(w, r, service)
+			d.procServer(w, r, reverse.Service)
 		} else {
-			reverse.ServeHTTP(w, r)
+			reverse.Reverse.ServeHTTP(w, r)
 		}
 		return
 	}
