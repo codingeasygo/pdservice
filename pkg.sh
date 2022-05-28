@@ -7,7 +7,7 @@ export cpwd=`pwd`
 export LD_LIBRARY_PATH=/usr/local/lib:/usr/lib
 output=$cpwd/build
 #### Package ####
-srv_ver=v1.2.0
+srv_ver=v1.2.1
 if [ "$2" != "" ];then
     srv_ver=$2
 fi
