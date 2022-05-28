@@ -612,10 +612,21 @@ func (d *Discover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		hostX, hostY := hostsAll[x], hostsAll[y]
 		proxyX, proxyY := proxyAll[hostX], proxyAll[hostY]
 		forwardX, forwardY := forwardAll[hostX], forwardAll[hostY]
-		return proxyX.Name < proxyY.Name && proxyX.Version < proxyY.Version && forwardX.Name < forwardY.Name
+		if proxyX.Name != proxyY.Name {
+			return proxyX.Name < proxyY.Name
+		}
+		if proxyX.Version != proxyY.Version {
+			return proxyX.Version < proxyY.Version
+		}
+		if forwardX.Name != forwardY.Name {
+			return forwardX.Name < forwardY.Name
+		}
+		return hostX < hostY
 	})
-	w.Header().Add("Content-Type", "html/plain; charset=utf-8")
-	w.WriteHeader(http.StatusNotFound)
+	w.Header().Add("Content-Type", "text/html; charset=utf-8")
+	if d.HostSelf != r.Host {
+		w.WriteHeader(http.StatusNotFound)
+	}
 	fmt.Fprintf(w, `
 		<style>
 			td{
@@ -624,7 +635,6 @@ func (d *Discover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		</style>
 	`)
 	if d.HostSelf != r.Host {
-		w.WriteHeader(http.StatusNotFound)
 		fmt.Fprintf(w, "<pre>\n")
 		fmt.Fprintf(w, "%v not found\n\n", r.Host)
 		fmt.Fprintf(w, "</pre>\n")
@@ -637,7 +647,7 @@ func (d *Discover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(host, "tcp://") || strings.HasPrefix(host, "udp://") {
 			fmt.Fprintf(w, `<tr><td>%v-%v</td><td>%v</td><td>%v</td><td>%v</td></tr>%v`, proxy.Name, proxy.Version, forward.Name, forward.Key, host, "\n")
 		} else {
-			fmt.Fprintf(w, `<tr><td>%v-%v</td><td>%v</td><td>%v</td><td><a href="%v">%v</a></td></tr>%v`, proxy.Name, proxy.Version, forward.Name, forward.Key, host, host, "\n")
+			fmt.Fprintf(w, `<tr><td>%v-%v</td><td>%v</td><td>%v</td><td><a target=”_blank” href="%v">%v</a></td></tr>%v`, proxy.Name, proxy.Version, forward.Name, forward.Key, host, host, "\n")
 		}
 	}
 	fmt.Fprintf(w, "</table>\n")
