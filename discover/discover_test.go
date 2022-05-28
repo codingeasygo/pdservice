@@ -57,6 +57,7 @@ func TestDiscover(t *testing.T) {
 	hostSuff := ".test.loc"
 	discover := NewDiscover()
 	discover.HostSuff = hostSuff
+	discover.HostProto = "http:"
 	{
 		fmt.Println("--> test container up")
 		discover.DockerFinder = ""
@@ -94,6 +95,7 @@ func TestDiscover(t *testing.T) {
 			t.Error(res3.Body.String())
 			return
 		}
+		fmt.Println(res3.Body.String())
 		res4, err := xhttp.GetText("http://127.0.0.1:8080")
 		if err != nil || !strings.Contains(res4, "nginx") {
 			t.Errorf("%v,%v", err, res4)

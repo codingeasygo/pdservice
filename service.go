@@ -38,6 +38,7 @@ func main() {
 	server.DockerAddr = cfg.StrDef("tcp://127.0.0.1:2376", "docker_addr")
 	server.DockerHost = cfg.StrDef("127.0.0.1", "docker_host")
 	server.HostSuff = cfg.StrDef("", "host_suffix")
+	server.HostProto = cfg.StrDef("https", "host_proto")
 	server.SrvPrefix = cfg.StrDef("/_s", "srv_prefix")
 	discover.SetLogLevel(cfg.IntDef(30, "log"))
 	server.StartRefresh(time.Duration(refreshTime)*time.Millisecond, triggerAdded, triggerRemoved)

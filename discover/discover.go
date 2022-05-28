@@ -17,6 +17,7 @@ import (
 	"github.com/codingeasygo/util/converter"
 	"github.com/codingeasygo/util/debug"
 	"github.com/codingeasygo/util/xprop"
+	"github.com/codingeasygo/util/xsort"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
@@ -73,6 +74,8 @@ type Discover struct {
 	DockerAddr   string
 	DockerHost   string
 	HostSuff     string
+	HostProto    string
+	HostSelf     string
 	TriggerBash  string
 	SrvPrefix    string
 	clientNew    *client.Client
@@ -588,15 +591,57 @@ func (d *Discover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	w.Header().Add("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusNotFound)
-	fmt.Fprintf(w, "%v not found\n\n", r.Host)
+	hostsAll := []string{}
+	proxyAll := map[string]*Container{}
+	forwardAll := map[string]*Forward{}
 	d.proxyLock.RLock()
-	fmt.Fprintf(w, "Having:\n")
-	for having := range d.proxyAll {
-		fmt.Fprintf(w, "\t%v\n", having)
+	for host, proxy := range d.proxyAll {
+		forward := proxy.Forwards[host]
+		if forward == nil {
+			continue
+		}
+		if !strings.HasPrefix(host, "tcp://") && !strings.HasPrefix(host, "udp://") {
+			host = fmt.Sprintf("%v//%v%v", d.HostProto, host, d.HostSuff)
+		}
+		hostsAll = append(hostsAll, host)
+		proxyAll[host] = proxy
+		forwardAll[host] = forward
 	}
 	d.proxyLock.RUnlock()
+	xsort.SortFunc(hostsAll, func(x, y int) bool {
+		hostX, hostY := hostsAll[x], hostsAll[y]
+		proxyX, proxyY := proxyAll[hostX], proxyAll[hostY]
+		forwardX, forwardY := forwardAll[hostX], forwardAll[hostY]
+		return proxyX.Name < proxyY.Name && proxyX.Version < proxyY.Version && forwardX.Name < forwardY.Name
+	})
+	w.Header().Add("Content-Type", "html/plain; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	fmt.Fprintf(w, `
+		<style>
+			td{
+				padding: 2px 8px 2px 8px;
+			}
+		</style>
+	`)
+	if d.HostSelf != r.Host {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintf(w, "<pre>\n")
+		fmt.Fprintf(w, "%v not found\n\n", r.Host)
+		fmt.Fprintf(w, "</pre>\n")
+	}
+	fmt.Fprintf(w, "Having:\n")
+	fmt.Fprintf(w, "<table>\n")
+	for _, host := range hostsAll {
+		proxy := proxyAll[host]
+		forward := forwardAll[host]
+		if strings.HasPrefix(host, "tcp://") || strings.HasPrefix(host, "udp://") {
+			fmt.Fprintf(w, `<tr><td>%v-%v</td><td>%v</td><td>%v</td><td>%v</td></tr>%v`, proxy.Name, proxy.Version, forward.Name, forward.Key, host, "\n")
+		} else {
+			fmt.Fprintf(w, `<tr><td>%v-%v</td><td>%v</td><td>%v</td><td><a href="%v">%v</a></td></tr>%v`, proxy.Name, proxy.Version, forward.Name, forward.Key, host, host, "\n")
+		}
+	}
+	fmt.Fprintf(w, "</table>\n")
+	fmt.Fprintf(w, "</pre>\n")
 }
 
 func (d *Discover) StartRefresh(refreshTime time.Duration, onAdded, onRemoved string) {
