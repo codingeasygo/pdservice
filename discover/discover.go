@@ -722,8 +722,13 @@ func (d *Discover) callTrigger(services map[string]*Container, name, trigger str
 			cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_VER", service.Version))
 			cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_NAME", service.Name))
 			cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_TYPE", forward.Type))
-			cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_HOST", forward.URI))
-			cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_PREF", forward.Prefix))
+			if forward.Wildcard {
+				cmd.Env = append(cmd.Env, fmt.Sprintf("%v=*.%v", "PD_SERVICE_HOST", forward.URI))
+				cmd.Env = append(cmd.Env, fmt.Sprintf("%v=*.%v", "PD_SERVICE_PREF", forward.Prefix))
+			} else {
+				cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_HOST", forward.URI))
+				cmd.Env = append(cmd.Env, fmt.Sprintf("%v=%v", "PD_SERVICE_PREF", forward.Prefix))
+			}
 			info, xerr := cmd.Output()
 			if xerr != nil {
 				WarnLog("Discover call refresh trigger %v fail with %v by\n\tCMD:%v\n\tENV:%v\n\tOut:\n%v", name, xerr, cmd.Path, cmd.Env, string(info))
