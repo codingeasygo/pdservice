@@ -46,7 +46,7 @@ func TestDiscover(t *testing.T) {
 		`))
 		time.Sleep(time.Millisecond * 10)
 		fmt.Println(callScript(`
-			docker exec docker-discover docker run -d --label PD_HOST_WWW=/:80 --label PD_TCP_WWW=:8080/:80 --label PD_UDP_WWW=:8080/:80 --label PD_SERVICE_TOKEN=abc --name ds-srv-v1.0.0 --restart always -P nginx
+			docker exec docker-discover docker run -d --label PD_HOST_WWW=*/:80 --label PD_TCP_WWW=:8080/:80 --label PD_UDP_WWW=:8080/:80 --label PD_SERVICE_TOKEN=abc --name ds-srv-v1.0.0 --restart always -P nginx
 			docker exec docker-discover docker run -d --label PD_HOST_WWW=:80 --label PD_TCP_WWW=:8081/:80 --label PD_UDP_WWW=:8081/:80 --name ds-srv-v1.0.1 --restart always -P nginx
 		`))
 	}
@@ -79,6 +79,13 @@ func TestDiscover(t *testing.T) {
 		discover.ServeHTTP(res1, req1)
 		if !strings.Contains(res1.Body.String(), "nginx") {
 			t.Error(res1.Body.String())
+			return
+		}
+		req10 := httptest.NewRequest("GET", "http://xx.v100.ds.test.loc/", nil)
+		res10 := httptest.NewRecorder()
+		discover.ServeHTTP(res10, req10)
+		if !strings.Contains(res10.Body.String(), "nginx") {
+			t.Error(res10.Body.String())
 			return
 		}
 		req2 := httptest.NewRequest("GET", "http://v101.ds.test.loc/", nil)

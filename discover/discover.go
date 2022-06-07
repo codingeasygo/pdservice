@@ -33,11 +33,12 @@ func copyAndClose(src, dst net.Conn) {
 }
 
 type Forward struct {
-	Name   string `json:"name"`
-	Key    string `json:"key"`
-	Type   string `json:"type"`
-	Prefix string `json:"prefix"`
-	URI    string `json:"uri"`
+	Name     string `json:"name"`
+	Key      string `json:"key"`
+	Type     string `json:"type"`
+	Prefix   string `json:"prefix"`
+	URI      string `json:"uri"`
+	Wildcard bool   `json:"wildcard"`
 }
 
 func (f *Forward) NewReverseProxy() (proxy *httputil.ReverseProxy, err error) {
@@ -49,19 +50,25 @@ func (f *Forward) NewReverseProxy() (proxy *httputil.ReverseProxy, err error) {
 }
 
 type Container struct {
-	ID       string              `json:"id"`
-	Name     string              `json:"name"`
-	Version  string              `json:"version"`
-	Token    string              `json:"token"`
-	Forwards map[string]*Forward `json:"forwards"`
+	ID         string              `json:"id"`
+	Name       string              `json:"name"`
+	Version    string              `json:"version"`
+	Token      string              `json:"token"`
+	Forwards   map[string]*Forward `json:"forwards"`
+	Status     string              `json:"status"`
+	Error      string              `json:"error"`
+	StartedAt  string              `json:"started_at"`
+	FinishedAt string              `json:"finished_at"`
 }
 
 type ReverseProxy struct {
+	Forward *Forward
 	Reverse *httputil.ReverseProxy
 	Service *Container
 }
 
 type ListenerProxy struct {
+	Forward *Forward
 	TCP     net.Listener
 	UDP     *net.UDPConn
 	Service *Container
@@ -175,7 +182,7 @@ func (d *Discover) Refresh() (all, added, updated, removed map[string]*Container
 					WarnLog("Discover update %v for service updated fail with %v", host, xerr)
 					return
 				}
-				d.proxyReverse[host] = &ReverseProxy{Reverse: proxy, Service: service}
+				d.proxyReverse[host] = &ReverseProxy{Reverse: proxy, Service: service, Forward: newForward}
 				updated[newForward.Prefix] = service
 				InfoLog("Discover update %v for service updated", host)
 			}
@@ -185,7 +192,7 @@ func (d *Discover) Refresh() (all, added, updated, removed map[string]*Container
 				WarnLog("Discover update %v for service up fail with %v", host, xerr)
 				return
 			}
-			d.proxyReverse[host] = &ReverseProxy{Reverse: proxy, Service: service}
+			d.proxyReverse[host] = &ReverseProxy{Reverse: proxy, Service: service, Forward: newForward}
 			added[newForward.Prefix] = service
 			InfoLog("Discover add %v for service up", host)
 		}
@@ -288,10 +295,14 @@ func (d *Discover) Discove() (containers map[string]*Container, err error) {
 		nameParts := strings.SplitN(name, d.MatchKey, 2)
 		verParts := strings.SplitN(nameParts[1], "-", 2)
 		container := &Container{
-			ID:       c.ID,
-			Name:     nameParts[0],
-			Version:  verParts[0],
-			Forwards: map[string]*Forward{},
+			ID:         c.ID,
+			Name:       nameParts[0],
+			Version:    verParts[0],
+			Forwards:   map[string]*Forward{},
+			Status:     inspect.State.Status,
+			Error:      inspect.State.Error,
+			StartedAt:  inspect.State.StartedAt,
+			FinishedAt: inspect.State.FinishedAt,
 		}
 		for key, val := range inspect.Config.Labels {
 			if key == "PD_SERVICE_TOKEN" {
@@ -321,6 +332,10 @@ func (d *Discover) Discove() (containers map[string]*Container, err error) {
 					Type: "http",
 					Key:  hostKey,
 					URI:  fmt.Sprintf("%v:%v", remoteHost, hostPort),
+				}
+				if strings.HasPrefix(hostKey, "*") {
+					hostKey = strings.TrimPrefix(hostKey, "*")
+					forward.Wildcard = true
 				}
 				if len(hostKey) > 0 {
 					forward.Prefix = fmt.Sprintf("%v.%v.%v", hostKey, strings.ReplaceAll(container.Version, ".", ""), container.Name)
@@ -528,7 +543,7 @@ func (d *Discover) procUDP(forward *Forward, service *Container) (err error) {
 		return
 	}
 	InfoLog("Discover forward %v://%v=>%v://%v is started on %v", forward.Type, forward.Prefix, forward.Type, forward.URI, addr)
-	d.proxyListen[forward.Prefix] = &ListenerProxy{UDP: local, Service: service}
+	d.proxyListen[forward.Prefix] = &ListenerProxy{UDP: local, Service: service, Forward: forward}
 	defer func() {
 		remote.Close()
 		local.Close()
@@ -555,7 +570,7 @@ func (d *Discover) procTCP(forward *Forward, service *Container) (err error) {
 		WarnLog("Discover forward %v://%v=>%v://%v is fail with %v", forward.Type, forward.Prefix, forward.Type, forward.URI, err)
 		return
 	}
-	d.proxyListen[forward.Prefix] = &ListenerProxy{TCP: ln, Service: service}
+	d.proxyListen[forward.Prefix] = &ListenerProxy{TCP: ln, Service: service, Forward: forward}
 	defer func() {
 		ln.Close()
 		delete(d.proxyListen, forward.Prefix)
@@ -580,8 +595,14 @@ func (d *Discover) procTCP(forward *Forward, service *Container) (err error) {
 }
 
 func (d *Discover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var reverse *ReverseProxy
 	d.proxyLock.RLock()
-	reverse := d.proxyReverse[r.Host]
+	for host, proxy := range d.proxyReverse {
+		if host == r.Host || (proxy.Forward.Wildcard && strings.HasSuffix(r.Host, host)) {
+			reverse = proxy
+			break
+		}
+	}
 	d.proxyLock.RUnlock()
 	if reverse != nil {
 		if strings.HasPrefix(r.URL.Path, d.SrvPrefix) {
@@ -645,9 +666,9 @@ func (d *Discover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		proxy := proxyAll[host]
 		forward := forwardAll[host]
 		if strings.HasPrefix(host, "tcp://") || strings.HasPrefix(host, "udp://") {
-			fmt.Fprintf(w, `<tr><td>%v-%v</td><td>%v</td><td>%v</td><td>%v</td></tr>%v`, proxy.Name, proxy.Version, forward.Name, forward.Key, host, "\n")
+			fmt.Fprintf(w, `<tr><td>%v-%v</td><td>%v</td><td>%v</td><td>%v</td><td>%v</td><td>%v</td></tr>%v`, proxy.Name, proxy.Version, forward.Name, forward.Key, host, proxy.Status, proxy.StartedAt, "\n")
 		} else {
-			fmt.Fprintf(w, `<tr><td>%v-%v</td><td>%v</td><td>%v</td><td><a target=”_blank” href="%v">%v</a></td></tr>%v`, proxy.Name, proxy.Version, forward.Name, forward.Key, host, host, "\n")
+			fmt.Fprintf(w, `<tr><td>%v-%v</td><td>%v</td><td>%v</td><td><a target=”_blank” href="%v">%v</a></td><td>%v</td><td>%v</td</tr>%v`, proxy.Name, proxy.Version, forward.Name, forward.Key, host, host, proxy.Status, proxy.StartedAt, "\n")
 		}
 	}
 	fmt.Fprintf(w, "</table>\n")
