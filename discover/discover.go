@@ -3,6 +3,7 @@ package discover
 import (
 	"context"
 	"fmt"
+	"html/template"
 	"io"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/codingeasygo/util/converter"
 	"github.com/codingeasygo/util/debug"
+	"github.com/codingeasygo/util/xmap"
 	"github.com/codingeasygo/util/xprop"
 	"github.com/codingeasygo/util/xsort"
 	"github.com/docker/docker/api/types"
@@ -85,6 +87,7 @@ type Discover struct {
 	HostSelf     string
 	TriggerBash  string
 	SrvPrefix    string
+	Preview      *template.Template
 	clientNew    *client.Client
 	clientHost   string
 	clientLatest time.Time
@@ -644,6 +647,26 @@ func (d *Discover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return hostX < hostY
 	})
+	if d.Preview != nil {
+		data := xmap.M{}
+		if d.HostSelf != r.Host {
+			w.WriteHeader(http.StatusNotFound)
+			data["Message"] = fmt.Sprintf("%v not found", r.Host)
+		}
+		hostList := []xmap.M{}
+		for _, host := range hostsAll {
+			container := proxyAll[host]
+			forward := forwardAll[host]
+			hostList = append(hostList, xmap.M{
+				"Host":      host,
+				"Container": container,
+				"Forward":   forward,
+			})
+		}
+		data["Hosts"] = hostList
+		d.Preview.Execute(w, data)
+		return
+	}
 	w.Header().Add("Content-Type", "text/html; charset=utf-8")
 	if d.HostSelf != r.Host {
 		w.WriteHeader(http.StatusNotFound)

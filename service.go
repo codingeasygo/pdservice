@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"html/template"
 	"net/http"
 	"os"
 	"time"
@@ -31,6 +32,7 @@ func main() {
 	refreshTime := cfg.Int64Def(10000, "refresh_time")
 	triggerAdded := cfg.StrDef("", "trigger_added")
 	triggerRemoved := cfg.StrDef("", "trigger_removed")
+	priview := cfg.StrDef("", "preview")
 	server := discover.NewDiscover()
 	server.TriggerBash = cfg.StrDef("bash", "trigger_bash")
 	server.DockerFinder = cfg.StrDef("", "trigger_finder")
@@ -41,6 +43,12 @@ func main() {
 	server.HostProto = cfg.StrDef("https", "host_proto")
 	server.HostSelf = cfg.StrDef("https", "host_self")
 	server.SrvPrefix = cfg.StrDef("/_s", "srv_prefix")
+	if len(priview) > 0 {
+		server.Preview, err = template.New("Priview").ParseFiles(priview)
+		if err != nil {
+			panic(err)
+		}
+	}
 	discover.SetLogLevel(cfg.IntDef(30, "log"))
 	server.StartRefresh(time.Duration(refreshTime)*time.Millisecond, triggerAdded, triggerRemoved)
 	err = http.ListenAndServe(listenAddr, server)

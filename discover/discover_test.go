@@ -3,6 +3,7 @@ package discover
 import (
 	"encoding/base64"
 	"fmt"
+	"html/template"
 	"io"
 	"io/ioutil"
 	"net"
@@ -106,6 +107,23 @@ func TestDiscover(t *testing.T) {
 		res4, err := xhttp.GetText("http://127.0.0.1:8080")
 		if err != nil || !strings.Contains(res4, "nginx") {
 			t.Errorf("%v,%v", err, res4)
+			return
+		}
+		reqPreview1 := httptest.NewRequest("GET", "http://pdsrv/", nil)
+		resPreview1 := httptest.NewRecorder()
+		discover.ServeHTTP(resPreview1, reqPreview1)
+		if !strings.Contains(resPreview1.Body.String(), "Having") {
+			t.Error(resPreview1.Body.String())
+			return
+		}
+		reqPreview2 := httptest.NewRequest("GET", "http://pdsrv/", nil)
+		resPreview2 := httptest.NewRecorder()
+		discover.Preview, _ = template.New("test").Parse(`
+		template
+		`)
+		discover.ServeHTTP(resPreview2, reqPreview2)
+		if !strings.Contains(resPreview2.Body.String(), "template") {
+			t.Error(resPreview2.Body.String())
 			return
 		}
 	}
