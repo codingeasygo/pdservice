@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -77,26 +78,32 @@ type ListenerProxy struct {
 }
 
 type Discover struct {
-	MatchKey     string
-	DockerFinder string
-	DockerCert   string
-	DockerAddr   string
-	DockerHost   string
-	HostSuff     string
-	HostProto    string
-	HostSelf     string
-	TriggerBash  string
-	SrvPrefix    string
-	Preview      *template.Template
-	clientNew    *client.Client
-	clientHost   string
-	clientLatest time.Time
-	clientLock   sync.RWMutex
-	proxyAll     map[string]*Container
-	proxyReverse map[string]*ReverseProxy
-	proxyListen  map[string]*ListenerProxy
-	proxyLock    sync.RWMutex
-	refreshing   bool
+	MatchKey         string
+	DockerFinder     string
+	DockerCert       string
+	DockerAddr       string
+	DockerHost       string
+	DockerClearDelay time.Duration
+	DockerClearExc   []string
+	DockerPruneDelay time.Duration
+	DockerPruneExc   []string
+	HostSuff         string
+	HostProto        string
+	HostSelf         string
+	TriggerBash      string
+	SrvPrefix        string
+	Preview          *template.Template
+	clientNew        *client.Client
+	clientHost       string
+	clientLatest     time.Time
+	clientLock       sync.RWMutex
+	proxyAll         map[string]*Container
+	proxyReverse     map[string]*ReverseProxy
+	proxyListen      map[string]*ListenerProxy
+	proxyLock        sync.RWMutex
+	dockerPruneLast  time.Time
+	dockerClearLast  time.Time
+	refreshing       bool
 }
 
 func NewDiscover() (discover *Discover) {
@@ -160,6 +167,109 @@ func (d *Discover) newDockerClient() (cli *client.Client, remoteHost string, err
 		d.clientNew = cli
 		d.clientHost = remoteHost
 		d.clientLatest = time.Now()
+	}
+	return
+}
+
+func (d *Discover) Prune() (err error) {
+	if d.DockerPruneDelay < 1 {
+		return
+	}
+	cli, _, err := d.newDockerClient()
+	if err != nil {
+		return
+	}
+	for _, name := range []string{"network", "image", "container"} {
+		exc := false
+		for _, e := range d.DockerPruneExc {
+			if name == e {
+				exc = true
+				break
+			}
+		}
+		if exc {
+			continue
+		}
+		switch name {
+		case "network":
+			report, xerr := cli.NetworksPrune(context.Background(), filters.Args{})
+			if xerr == nil {
+				InfoLog("Discover prune network success with %v deleted", report.NetworksDeleted)
+			}
+			err = xerr
+		case "image":
+			report, xerr := cli.ImagesPrune(context.Background(), filters.Args{})
+			if xerr == nil {
+				InfoLog("Discover prune image success with %v space reclaimed", report.SpaceReclaimed)
+			}
+			err = xerr
+		case "container":
+			report, xerr := cli.ContainersPrune(context.Background(), filters.Args{})
+			if xerr == nil {
+				InfoLog("Discover prune container success with %v space reclaimed", report.SpaceReclaimed)
+			}
+			err = xerr
+		}
+		if err != nil {
+			break
+		}
+	}
+	return
+}
+
+func (d *Discover) Clear() (cleared int, err error) {
+	if d.DockerClearDelay < 1 {
+		return
+	}
+	cli, _, err := d.newDockerClient()
+	if err != nil {
+		return
+	}
+	containerList, err := cli.ContainerList(context.Background(), types.ContainerListOptions{
+		All: true,
+	})
+	if err != nil {
+		return
+	}
+	for _, container := range containerList {
+		inspect, xerr := cli.ContainerInspect(context.Background(), container.ID)
+		if xerr != nil {
+			err = xerr
+			break
+		}
+		exc := false
+		for _, e := range d.DockerClearExc {
+			reg, xerr := regexp.Compile(e)
+			if xerr != nil {
+				err = xerr
+				break
+			}
+			if reg.MatchString(inspect.Name) {
+				exc = true
+				break
+			}
+		}
+		if err != nil {
+			break
+		}
+		if exc {
+			continue
+		}
+		startAt, xerr := time.Parse(time.RFC3339Nano, inspect.State.StartedAt)
+		if xerr != nil {
+			err = xerr
+			break
+		}
+		if time.Since(startAt) < d.DockerClearDelay {
+			continue
+		}
+		err = cli.ContainerRemove(context.Background(), container.ID, types.ContainerRemoveOptions{Force: true})
+		if err != nil {
+			InfoLog("Discover remove container %v fail with %v", inspect.Name, err)
+			break
+		}
+		InfoLog("Discover remove container %v success", inspect.Name)
+		cleared++
 	}
 	return
 }
@@ -709,9 +819,12 @@ func (d *Discover) StopRefresh() {
 }
 
 func (d *Discover) runRefresh(refreshTime time.Duration, onAdded, onRemoved string) {
+	refreshTicker := time.NewTicker(refreshTime)
 	for d.refreshing {
+		<-refreshTicker.C
 		d.callRefresh(onAdded, onRemoved)
-		time.Sleep(refreshTime)
+		d.callClear()
+		d.callPrune()
 	}
 }
 
@@ -733,6 +846,42 @@ func (d *Discover) callRefresh(onAdded, onRemoved string) {
 	if len(removed) > 0 && len(onRemoved) > 0 {
 		d.callTrigger(removed, "removed", onRemoved)
 	}
+}
+
+func (d *Discover) callClear() {
+	defer func() {
+		if xerr := recover(); xerr != nil {
+			ErrorLog("Discover call clear panic with %v, call stack is:\n%v", xerr, debug.CallStatck())
+		}
+	}()
+	if d.DockerClearDelay < 1 || time.Since(d.dockerClearLast) < d.DockerClearDelay {
+		return
+	}
+	_, err := d.Clear()
+	if err != nil {
+		ErrorLog("Discover call clear fail with %v", err)
+	} else {
+		InfoLog("Discover call clear success")
+	}
+	d.dockerPruneLast = time.Now()
+}
+
+func (d *Discover) callPrune() {
+	defer func() {
+		if xerr := recover(); xerr != nil {
+			ErrorLog("Discover call prune panic with %v, call stack is:\n%v", xerr, debug.CallStatck())
+		}
+	}()
+	if d.DockerPruneDelay < 1 || time.Since(d.dockerPruneLast) < d.DockerPruneDelay {
+		return
+	}
+	err := d.Prune()
+	if err != nil {
+		ErrorLog("Discover call prune fail with %v", err)
+	} else {
+		InfoLog("Discover call prune success")
+	}
+	d.dockerPruneLast = time.Now()
 }
 
 func (d *Discover) callTrigger(services map[string]*Container, name, trigger string) {

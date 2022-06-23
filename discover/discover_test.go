@@ -362,4 +362,31 @@ func TestDiscover(t *testing.T) {
 		io.Copy(ioutil.Discard, conn)
 		conn.Close()
 	}
+	{ //clear
+		fmt.Println(callScript(`
+			docker exec docker-discover docker rm -f ds-srv-v1.0.0
+			docker exec docker-discover docker rm -f ds-srv-v1.0.1
+			docker exec docker-discover docker rm -f ds-srv-v1.0.2
+		`))
+		time.Sleep(time.Millisecond * 10)
+		fmt.Println(callScript(`
+			docker exec docker-discover docker run -d --label PD_HOST_WWW=*/:80 --label PD_TCP_WWW=:8080/:80 --label PD_UDP_WWW=:8080/:80 --label PD_SERVICE_TOKEN=abc --name ds-srv-v1.0.0 --restart always -P nginx
+			docker exec docker-discover docker run -d --label PD_HOST_WWW=:80 --label PD_TCP_WWW=:8081/:80 --label PD_UDP_WWW=:8081/:80 --name ds-srv-v1.0.1 --restart always -P nginx
+		`))
+		time.Sleep(2 * time.Second)
+		discover.DockerClearDelay = time.Second
+		discover.DockerClearExc = []string{"ds-srv-v1.0.1"}
+		_, err := discover.Clear()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		discover.DockerPruneDelay = time.Second
+		discover.DockerPruneExc = []string{"network"}
+		err = discover.Prune()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+	}
 }
