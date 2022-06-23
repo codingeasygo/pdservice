@@ -39,9 +39,9 @@ func main() {
 	server.DockerCert = cfg.StrDef("certs", "docker_cert")
 	server.DockerAddr = cfg.StrDef("tcp://127.0.0.1:2376", "docker_addr")
 	server.DockerHost = cfg.StrDef("127.0.0.1", "docker_host")
-	server.DockerClearDelay = time.Duration(cfg.Int64Def(0, "docker_clear_delay"))
+	server.DockerClearDelay = time.Duration(cfg.Int64Def(0, "docker_clear_delay")) * time.Minute
 	server.DockerClearExc = cfg.ArrayStrDef(nil, "docker_clear_exc")
-	server.DockerPruneDelay = time.Duration(cfg.Int64Def(0, "docker_prune_delay"))
+	server.DockerPruneDelay = time.Duration(cfg.Int64Def(0, "docker_prune_delay")) * time.Minute
 	server.DockerPruneExc = cfg.ArrayStrDef(nil, "docker_prune_exc")
 	server.HostSuff = cfg.StrDef("", "host_suffix")
 	server.HostProto = cfg.StrDef("https", "host_proto")
