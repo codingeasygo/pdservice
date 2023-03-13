@@ -49,7 +49,7 @@ func main() {
 	server.HostSelf = cfg.StrDef("https", "host_self")
 	server.SrvPrefix = cfg.StrDef("/_s", "srv_prefix")
 	if len(priview) > 0 {
-		server.Preview, err = template.New("Priview").ParseFiles(priview)
+		server.Preview, err = template.ParseFiles(priview)
 		if err != nil {
 			panic(err)
 		}
