@@ -808,27 +808,27 @@ func (d *Discover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "</pre>\n")
 }
 
-func (d *Discover) StartRefresh(refreshTime time.Duration, onAdded, onRemoved string) {
+func (d *Discover) StartRefresh(refreshTime time.Duration, onAdded, onRemoved, onUpdated string) {
 	d.refreshing = true
-	InfoLog("Discover start refresh by time:%v,added:%v,removed:%v", refreshTime, onAdded, onRemoved)
-	go d.runRefresh(refreshTime, onAdded, onRemoved)
+	InfoLog("Discover start refresh by time:%v,added:%v,removed:%v,updated:%v", refreshTime, onAdded, onRemoved, onUpdated)
+	go d.runRefresh(refreshTime, onAdded, onRemoved, onUpdated)
 }
 
 func (d *Discover) StopRefresh() {
 	d.refreshing = false
 }
 
-func (d *Discover) runRefresh(refreshTime time.Duration, onAdded, onRemoved string) {
+func (d *Discover) runRefresh(refreshTime time.Duration, onAdded, onRemoved, onUpdated string) {
 	refreshTicker := time.NewTicker(refreshTime)
 	for d.refreshing {
 		<-refreshTicker.C
-		d.callRefresh(onAdded, onRemoved)
+		d.callRefresh(onAdded, onRemoved, onUpdated)
 		d.callClear()
 		d.callPrune()
 	}
 }
 
-func (d *Discover) callRefresh(onAdded, onRemoved string) {
+func (d *Discover) callRefresh(onAdded, onRemoved, onUpdated string) {
 	defer func() {
 		if xerr := recover(); xerr != nil {
 			ErrorLog("Discover call refresh panic with %v, call stack is:\n%v", xerr, debug.CallStatck())
@@ -845,6 +845,9 @@ func (d *Discover) callRefresh(onAdded, onRemoved string) {
 	}
 	if len(removed) > 0 && len(onRemoved) > 0 {
 		d.callTrigger(removed, "removed", onRemoved)
+	}
+	if len(updated) > 0 && len(onUpdated) > 0 {
+		d.callTrigger(updated, "updated", onUpdated)
 	}
 }
 

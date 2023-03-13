@@ -239,7 +239,7 @@ func TestDiscover(t *testing.T) {
 			docker exec docker-discover docker rm -f ds-srv-v1.0.1
 			docker exec docker-discover docker rm -f ds-srv-v1.0.2
 		`))
-		discover.StartRefresh(time.Millisecond*10, "./trigger.sh", "./trigger.sh")
+		discover.StartRefresh(time.Millisecond*10, "./trigger.sh", "./trigger.sh", "./trigger.sh")
 		time.Sleep(time.Millisecond * 10)
 		fmt.Println(callScript(`
 			docker exec docker-discover docker run -d --label PD_HOST_WWW=/:80 --label PD_HOST_XX=/:8080 --label PD_TCP_XY=:0/:8080 --label PD_SERVICE_TOKEN=abc --name ds-srv-v1.0.0 --restart always -P nginx

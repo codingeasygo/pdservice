@@ -32,6 +32,7 @@ func main() {
 	refreshTime := cfg.Int64Def(10000, "refresh_time")
 	triggerAdded := cfg.StrDef("", "trigger_added")
 	triggerRemoved := cfg.StrDef("", "trigger_removed")
+	triggerUpdated := cfg.StrDef("", "trigger_updated")
 	priview := cfg.StrDef("", "preview")
 	server := discover.NewDiscover()
 	server.TriggerBash = cfg.StrDef("bash", "trigger_bash")
@@ -54,7 +55,7 @@ func main() {
 		}
 	}
 	discover.SetLogLevel(cfg.IntDef(30, "log"))
-	server.StartRefresh(time.Duration(refreshTime)*time.Millisecond, triggerAdded, triggerRemoved)
+	server.StartRefresh(time.Duration(refreshTime)*time.Millisecond, triggerAdded, triggerRemoved, triggerUpdated)
 	err = http.ListenAndServe(listenAddr, server)
 	if err != nil {
 		panic(err)
