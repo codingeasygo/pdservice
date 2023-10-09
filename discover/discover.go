@@ -756,7 +756,7 @@ func (d *Discover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if !strings.HasPrefix(host, "tcp://") && !strings.HasPrefix(host, "udp://") {
-			host = fmt.Sprintf("%v//%v%v", d.HostProto, host, d.HostSuff)
+			host = fmt.Sprintf("%v://%v%v", d.HostProto, host, d.HostSuff)
 		}
 		hostsAll = append(hostsAll, host)
 		proxyAll[host] = proxy
