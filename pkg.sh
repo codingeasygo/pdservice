@@ -20,12 +20,12 @@ EOF
 
 GOOS=linux go build -trimpath -v .
 
-pub_srv=$1
+pub_srv=$2
 if [ "$pub_srv" == "" ];then
     docker build --build-arg="HTTPS_PROXY=$HTTPS_PROXY" -t $srv_name:$srv_ver .
 else
-    docker build --build-arg="HTTPS_PROXY=$HTTPS_PROXY" -t $1/$srv_name:$srv_ver .
-    docker push $1/$srv_name:$srv_ver
+    docker build --build-arg="HTTPS_PROXY=$HTTPS_PROXY" -t $pub_srv/$srv_name:$srv_ver .
+    docker push $pub_srv/$srv_name:$srv_ver
 fi
 
 echo "Package $srv_name-$srv_ver done..."
