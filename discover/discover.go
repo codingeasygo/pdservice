@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/codingeasygo/util/converter"
-	"github.com/codingeasygo/util/debug"
+	"github.com/codingeasygo/util/xdebug"
 	"github.com/codingeasygo/util/xmap"
 	"github.com/codingeasygo/util/xprop"
 	"github.com/codingeasygo/util/xsort"
@@ -55,6 +55,7 @@ func (f *Forward) NewReverseProxy() (proxy *httputil.ReverseProxy, err error) {
 type Container struct {
 	ID         string              `json:"id"`
 	Name       string              `json:"name"`
+	Service    string              `json:"service"`
 	Version    string              `json:"version"`
 	Token      string              `json:"token"`
 	Forwards   map[string]*Forward `json:"forwards"`
@@ -130,6 +131,19 @@ func (d *Discover) newDockerClient() (cli *client.Client, remoteHost string, err
 	if d.clientNew != nil {
 		d.clientNew.Close()
 		d.clientNew = nil
+	}
+	if len(d.DockerAddr) < 1 && len(d.DockerFinder) < 1 {
+		remoteHost = d.DockerHost
+		if len(remoteHost) < 1 {
+			remoteHost = "127.0.0.1"
+		}
+		cli, err = client.NewClientWithOpts(client.FromEnv)
+		if err == nil {
+			d.clientNew = cli
+			d.clientHost = remoteHost
+			d.clientLatest = time.Now()
+		}
+		return
 	}
 	dockerCert, dockerAddr := d.DockerCert, d.DockerAddr
 	remoteHost = d.DockerHost
@@ -297,17 +311,17 @@ func (d *Discover) Refresh() (all, added, updated, removed map[string]*Container
 				}
 				d.proxyReverse[host] = &ReverseProxy{Reverse: proxy, Service: service, Forward: newForward}
 				updated[newForward.Prefix] = service
-				InfoLog("Discover update %v for service updated", host)
+				InfoLog("Discover update %v for service %v updated", host, service.Name)
 			}
 		} else { //new
 			proxy, xerr := newForward.NewReverseProxy()
 			if xerr != nil {
-				WarnLog("Discover update %v for service up fail with %v", host, xerr)
+				WarnLog("Discover update %v for service %v up fail with %v", host, service.Name, xerr)
 				return
 			}
 			d.proxyReverse[host] = &ReverseProxy{Reverse: proxy, Service: service, Forward: newForward}
 			added[newForward.Prefix] = service
-			InfoLog("Discover add %v for service up", host)
+			InfoLog("Discover add %v for service %v up", host, service.Name)
 		}
 		newAll[newForward.Prefix] = service
 	}
@@ -316,7 +330,7 @@ func (d *Discover) Refresh() (all, added, updated, removed map[string]*Container
 		if _, ok := all[oldForward.Prefix]; !ok { //deleted
 			delete(d.proxyReverse, host)
 			removed[oldForward.Prefix] = service
-			InfoLog("Discover remove %v for service down", host)
+			InfoLog("Discover remove %v for service %v down", host, service.Name)
 		}
 	}
 	procListen := func(newForward *Forward, service *Container) {
@@ -389,7 +403,7 @@ func (d *Discover) Discove() (containers map[string]*Container, err error) {
 	}
 	containerList, err := cli.ContainerList(context.Background(), types.ContainerListOptions{
 		All:     true,
-		Filters: filters.NewArgs(filters.Arg("name", fmt.Sprintf("^.*%vv[0-9\\.]*.*$", d.MatchKey))),
+		Filters: filters.NewArgs(filters.Arg("name", fmt.Sprintf("^.*%v.*$", d.MatchKey))),
 	})
 	if err != nil {
 		return
@@ -409,7 +423,8 @@ func (d *Discover) Discove() (containers map[string]*Container, err error) {
 		verParts := strings.SplitN(nameParts[1], "-", 2)
 		container := &Container{
 			ID:         c.ID,
-			Name:       nameParts[0],
+			Name:       name,
+			Service:    nameParts[0],
 			Version:    verParts[0],
 			Forwards:   map[string]*Forward{},
 			Status:     inspect.State.Status,
@@ -451,9 +466,12 @@ func (d *Discover) Discove() (containers map[string]*Container, err error) {
 					forward.Wildcard = true
 				}
 				if len(hostKey) > 0 {
-					forward.Prefix = fmt.Sprintf("%v.%v.%v", hostKey, strings.ReplaceAll(container.Version, ".", ""), container.Name)
+					forward.Prefix = fmt.Sprintf("%v.%v", hostKey, strings.ReplaceAll(container.Version, ".", ""))
 				} else {
-					forward.Prefix = fmt.Sprintf("%v.%v", strings.ReplaceAll(container.Version, ".", ""), container.Name)
+					forward.Prefix = fmt.Sprintf("%v", strings.ReplaceAll(container.Version, ".", ""))
+				}
+				if len(container.Service) > 0 {
+					forward.Prefix += "." + container.Service
 				}
 			} else if strings.HasPrefix(key, "PD_TCP_") || strings.HasPrefix(key, "PD_UDP_") {
 				valParts := strings.SplitN(val, "/", 2)
@@ -711,13 +729,16 @@ func (d *Discover) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var reverse *ReverseProxy
 	d.proxyLock.RLock()
 	for host, proxy := range d.proxyReverse {
-		if host == r.Host || (proxy.Forward.Wildcard && strings.HasSuffix(r.Host, host)) {
+		host = strings.ToLower(host)
+		hostname := strings.ToLower(strings.SplitN(r.Host, ":", 2)[0])
+		if host == hostname || (proxy.Forward.Wildcard && strings.HasSuffix(hostname, host)) {
 			reverse = proxy
 			break
 		}
 	}
 	d.proxyLock.RUnlock()
 	if reverse != nil {
+		DebugLog("Discover reverse %v %v%v to %v.%v", r.Method, r.Host, r.URL, reverse.Service.Name, reverse.Forward.Name)
 		if strings.HasPrefix(r.URL.Path, d.SrvPrefix) {
 			d.procServer(w, r, reverse.Service)
 		} else {
@@ -820,18 +841,25 @@ func (d *Discover) StopRefresh() {
 
 func (d *Discover) runRefresh(refreshTime time.Duration, onAdded, onRemoved, onUpdated string) {
 	refreshTicker := time.NewTicker(refreshTime)
+	var allOld, addedOld, updatedOld, removedOld int
+	var lastShow time.Time
 	for d.refreshing {
 		<-refreshTicker.C
-		d.callRefresh(onAdded, onRemoved, onUpdated)
+		all, added, updated, removed := d.callRefresh(onAdded, onRemoved, onUpdated)
+		if time.Since(lastShow) > time.Minute || len(all) != allOld || len(added) != addedOld || len(updated) != updatedOld || len(removed) != removedOld {
+			DebugLog("Discover call refresh success with all:%v,added:%v,updated:%v,removed:%v", len(all), len(added), len(updated), len(removed))
+			allOld, addedOld, updatedOld, removedOld = len(all), len(added), len(updated), len(removed)
+			lastShow = time.Now()
+		}
 		d.callClear()
 		d.callPrune()
 	}
 }
 
-func (d *Discover) callRefresh(onAdded, onRemoved, onUpdated string) {
+func (d *Discover) callRefresh(onAdded, onRemoved, onUpdated string) (all, added, updated, removed map[string]*Container) {
 	defer func() {
 		if xerr := recover(); xerr != nil {
-			ErrorLog("Discover call refresh panic with %v, call stack is:\n%v", xerr, debug.CallStatck())
+			ErrorLog("Discover call refresh panic with %v, call stack is:\n%v", xerr, xdebug.CallStack())
 		}
 	}()
 	all, added, updated, removed, err := d.Refresh()
@@ -839,7 +867,6 @@ func (d *Discover) callRefresh(onAdded, onRemoved, onUpdated string) {
 		ErrorLog("Discover call refresh fail with %v", err)
 		return
 	}
-	DebugLog("Discover call refresh success with all:%v,added:%v,updated:%v,removed:%v", len(all), len(added), len(updated), len(removed))
 	if len(added) > 0 && len(onAdded) > 0 {
 		d.callTrigger(added, "added", onAdded)
 	}
@@ -849,12 +876,13 @@ func (d *Discover) callRefresh(onAdded, onRemoved, onUpdated string) {
 	if len(updated) > 0 && len(onUpdated) > 0 {
 		d.callTrigger(updated, "updated", onUpdated)
 	}
+	return
 }
 
 func (d *Discover) callClear() {
 	defer func() {
 		if xerr := recover(); xerr != nil {
-			ErrorLog("Discover call clear panic with %v, call stack is:\n%v", xerr, debug.CallStatck())
+			ErrorLog("Discover call clear panic with %v, call stack is:\n%v", xerr, xdebug.CallStack())
 		}
 	}()
 	if d.DockerClearDelay < 1 || time.Since(d.dockerClearLast) < d.DockerClearDelay {
@@ -872,7 +900,7 @@ func (d *Discover) callClear() {
 func (d *Discover) callPrune() {
 	defer func() {
 		if xerr := recover(); xerr != nil {
-			ErrorLog("Discover call prune panic with %v, call stack is:\n%v", xerr, debug.CallStatck())
+			ErrorLog("Discover call prune panic with %v, call stack is:\n%v", xerr, xdebug.CallStack())
 		}
 	}()
 	if d.DockerPruneDelay < 1 || time.Since(d.dockerPruneLast) < d.DockerPruneDelay {

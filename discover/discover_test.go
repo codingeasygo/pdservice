@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codingeasygo/util/converter"
 	"github.com/codingeasygo/util/xhttp"
 	"github.com/codingeasygo/util/xnet"
 )
@@ -36,6 +37,11 @@ func callScript(script string) string {
 func basicAuth(username, password string) string {
 	auth := username + ":" + password
 	return base64.StdEncoding.EncodeToString([]byte(auth))
+}
+
+func TestXX(t *testing.T) {
+	vals := strings.SplitN("x1abc", "x1", 2)
+	fmt.Println(converter.JSON(vals))
 }
 
 func TestDiscover(t *testing.T) {

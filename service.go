@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/codingeasygo/pdservice/discover"
@@ -21,7 +22,7 @@ func main() {
 		confPath = os.Args[1]
 	}
 	wd, _ := os.Getwd()
-	fmt.Printf("starting pdservice with working on %v\n", wd)
+	fmt.Printf("starting pdservice %v with working on %v\n", Version, wd)
 	cfg := xprop.NewConfig()
 	err := cfg.Load(confPath)
 	if err != nil {
@@ -37,16 +38,17 @@ func main() {
 	server := discover.NewDiscover()
 	server.TriggerBash = cfg.StrDef("bash", "trigger_bash")
 	server.DockerFinder = cfg.StrDef("", "trigger_finder")
-	server.DockerCert = cfg.StrDef("certs", "docker_cert")
-	server.DockerAddr = cfg.StrDef("tcp://127.0.0.1:2376", "docker_addr")
-	server.DockerHost = cfg.StrDef("127.0.0.1", "docker_host")
+	server.DockerCert = cfg.StrDef("", "docker_cert")
+	server.DockerAddr = cfg.StrDef("", "docker_addr")
+	server.DockerHost = cfg.StrDef("", "docker_host")
 	server.DockerClearDelay = time.Duration(cfg.Int64Def(0, "docker_clear_delay")) * time.Minute
 	server.DockerClearExc = cfg.ArrayStrDef(nil, "docker_clear_exc")
 	server.DockerPruneDelay = time.Duration(cfg.Int64Def(0, "docker_prune_delay")) * time.Minute
 	server.DockerPruneExc = cfg.ArrayStrDef(nil, "docker_prune_exc")
 	server.HostSuff = cfg.StrDef("", "host_suffix")
-	server.HostProto = cfg.StrDef("https", "host_proto")
-	server.HostSelf = cfg.StrDef("https", "host_self")
+	server.HostProto = cfg.StrDef("http", "host_proto")
+	server.HostSelf = cfg.StrDef(strings.TrimPrefix(server.HostSuff, "."), "host_self")
+	server.MatchKey = cfg.StrDef("-srv-", "match_key")
 	server.SrvPrefix = cfg.StrDef("/_s", "srv_prefix")
 	if len(priview) > 0 {
 		server.Preview, err = template.ParseFiles(priview)

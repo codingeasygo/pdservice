@@ -97,10 +97,8 @@ github.com/client9/misspell v0.3.4/go.mod h1:qj6jICC3Q7zFZvVWo7KLAzC3yx5G7kyvSDk
 github.com/cncf/udpa/go v0.0.0-20191209042840-269d4d468f6f/go.mod h1:M8M6+tZqaGXZJjfX53e64911xZQV5JYwmTeXPW+k8Sc=
 github.com/cncf/udpa/go v0.0.0-20201120205902-5459f2c99403/go.mod h1:WmhPx2Nbnhtbo57+VJT5O0JRkEi1Wbu0z5j0R8u5Hbk=
 github.com/cockroachdb/datadriven v0.0.0-20190809214429-80d97fb3cbaa/go.mod h1:zn76sxSg3SzpJ0PPJaLDCu+Bu0Lg3sKTORVIj19EIF8=
-github.com/codingeasygo/util v0.0.0-20210613035738-602780db21a3 h1:ggSEJ4haovUBbNvW0/i7K/doVQVAzPfzN56eVHfL5sM=
-github.com/codingeasygo/util v0.0.0-20210613035738-602780db21a3/go.mod h1:9dg5FLVmPf1T+9CC6Mna6RAyfNjXwUQI5WX27Z+8yIY=
-github.com/codingeasygo/util v0.0.0-20211223063217-e72e25c49ae0 h1:C4rlxQB3YLrE8B+NzlViyFwFCXclbHuENGlKTWsB8EM=
-github.com/codingeasygo/util v0.0.0-20211223063217-e72e25c49ae0/go.mod h1:9dg5FLVmPf1T+9CC6Mna6RAyfNjXwUQI5WX27Z+8yIY=
+github.com/codingeasygo/util v0.0.0-20230905092720-cb8130b9031f h1:qJCOFxeKi23Z68Sp7hDS6A4bjCpEV0o1M2NyJG+k9aQ=
+github.com/codingeasygo/util v0.0.0-20230905092720-cb8130b9031f/go.mod h1:CE705pc3Xn2F3nqMKhvfaigeXeDudpdteTzbf+2jwig=
 github.com/containerd/aufs v0.0.0-20200908144142-dab0cbea06f4/go.mod h1:nukgQABAEopAHvB6j7cnP5zJ+/3aVcE7hCYqvIwAHyE=
 github.com/containerd/aufs v0.0.0-20201003224125-76a6863f2989/go.mod h1:AkGGQs9NM2vtYHaUen+NljV0/baGCAPELGm2q9ZXpWU=
 github.com/containerd/aufs v0.0.0-20210316121734-20793ff83c97/go.mod h1:kL5kd6KM5TzQjR79jljyi4olc1Vrx6XBlcyj3gNv2PU=
