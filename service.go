@@ -47,9 +47,12 @@ func main() {
 	server.DockerPruneExc = cfg.ArrayStrDef(nil, "docker_prune_exc")
 	server.HostSuff = cfg.StrDef("", "host_suffix")
 	server.HostProto = cfg.StrDef("http", "host_proto")
-	server.HostSelf = cfg.StrDef(strings.TrimPrefix(server.HostSuff, "."), "host_self")
+	server.HostSelf = cfg.StrDef("", "host_self")
 	server.MatchKey = cfg.StrDef("-srv-", "match_key")
 	server.SrvPrefix = cfg.StrDef("/_s", "srv_prefix")
+	if len(server.HostSelf) < 1 {
+		server.HostSelf = strings.TrimPrefix(server.HostSuff, ".")
+	}
 	if len(priview) > 0 {
 		server.Preview, err = template.ParseFiles(priview)
 		if err != nil {
